@@ -173,6 +173,12 @@ long long wasmGetLastSearchTimeMs() {
     return (long long)::getLastSearchTimeMs();
 }
 
+// 获取上一次搜索的根节点评分（用于自检：是否给出「全部已证败」结论）
+EMSCRIPTEN_KEEPALIVE
+long long wasmGetLastSearchScore() {
+    return (long long)::getLastSearchScore();
+}
+
 // 评估当前局面（调试用）
 EMSCRIPTEN_KEEPALIVE
 long long evaluateBoard() {

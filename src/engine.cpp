@@ -19,6 +19,7 @@ static std::chrono::steady_clock::time_point g_searchStartTime;
 static int g_lastSearchDepth = 0;
 static int64_t g_lastSearchNodes = 0;
 static int64_t g_lastSearchTimeMs = 0;
+static int64_t g_lastSearchScore = 0;
 
 // ============= Zobrist 哈希 =============
 
@@ -770,8 +771,6 @@ SearchResult findBestMove(Board& board) {
 
     // 迭代加深
     for (int depth = 1; depth <= g_maxDepth; depth++) {
-        result.searchDepth = depth;
-        
         // 重新排序根层候选点（基于上一轮的结果）
         if (prevBestX >= 0) {
             for (size_t i = 0; i < rootCandidates.size(); i++) {
@@ -852,6 +851,14 @@ SearchResult findBestMove(Board& board) {
             bestXInIter = bestLiveX;
             bestYInIter = bestLiveY;
             bestInIter = bestLiveScore;
+        } else if (g_timedOut) {
+            // 本迭代被超时截断：候选只扫了一部分。「所有着法都已证败」这个
+            // 结论只在完整扫描后才成立，否则没来得及评估的活路会被当成必败，
+            // 于是同一局面随预算变化在「必胜/必败」之间翻转（实测 8s 时只扫
+            // 了 24 个候选里的 1 个就下了必败结论）。此处作废本轮评选，保
+            // 留上一轮完整迭代的结果。
+            bestXInIter = -1;
+            bestYInIter = -1;
         }
         if (bestXInIter >= 0) {
             bestScore = bestInIter;
@@ -861,6 +868,7 @@ SearchResult findBestMove(Board& board) {
             result.bestX = bestXInIter;
             result.bestY = bestYInIter;
             result.bestScore = bestInIter;
+            result.searchDepth = depth;  // 只上报被采纳结论所在的深度
         }
         
         // 检查时间
@@ -873,6 +881,14 @@ SearchResult findBestMove(Board& board) {
         if (getElapsedMs() > g_timeBudgetMs * 0.9) break;
     }
     
+    // 兜底：若每轮都在扫描途中超时、从未得到可用评选，用排序后的首选候选，
+    // 保证上层总能拿到一手棋（搜索分数此时未知，保持中性值）。
+    if (result.bestX < 0 && !rootCandidates.empty()) {
+        result.bestX = rootCandidates[0].pos.x;
+        result.bestY = rootCandidates[0].pos.y;
+        result.bestScore = 0;
+    }
+    
     result.nodesVisited = g_nodesVisited;
     result.elapsedMs = getElapsedMs();
     result.timedOut = g_timedOut;
@@ -881,6 +897,7 @@ SearchResult findBestMove(Board& board) {
     g_lastSearchDepth = result.searchDepth;
     g_lastSearchNodes = result.nodesVisited;
     g_lastSearchTimeMs = result.elapsedMs;
+    g_lastSearchScore = result.bestScore;
     
     return result;
 }
@@ -935,4 +952,8 @@ int64_t getLastSearchNodes() {
 
 int64_t getLastSearchTimeMs() {
     return g_lastSearchTimeMs;
+}
+
+int64_t getLastSearchScore() {
+    return g_lastSearchScore;
 }

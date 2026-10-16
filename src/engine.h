@@ -197,5 +197,8 @@ void resetStats();
 int getLastSearchDepth();
 int64_t getLastSearchNodes();
 int64_t getLastSearchTimeMs();
+// 上一次搜索的根节点评分：处于 [-WIN_THRESHOLD, -(WIN_THRESHOLD-999)] 区间
+// 表示「所有着法都已证败」（该结论只在候选完整扫描后才成立）
+int64_t getLastSearchScore();
 
 #endif // GOMOKU_ENGINE_H

@@ -222,6 +222,53 @@ setTimeout(() => {
     'AI must find the forcing point that wins two moves later'
   );
   console.log('PASS: AI finds the sequential double threat (forced block then five)');
+
+  // A "every move is proven lost" verdict is only valid after the whole root
+  // candidate list has been scanned. With a partial scan (time cutoff mid-list)
+  // the engine used to promote that verdict anyway, so the same position
+  // flipped between "winning" and "proven lost" depending on the time budget.
+  // The all-lost verdict occupies [-WIN_THRESHOLD, -(WIN_THRESHOLD-999)].
+  const inAllLostBand = (score) => score >= -10000000 && score <= -9999001;
+
+  Module._initGame();
+  Module._setDifficultyLevel(2);
+  Module._setTimeLimit(8000);
+  const partialScanSetup = [
+    [7, 7], [7, 6], [6, 7], [8, 7], [6, 5], [6, 6], [5, 6], [7, 8],
+    [4, 7], [3, 8], [7, 4], [8, 3], [5, 7], [3, 7], [5, 5], [5, 8],
+    [5, 4], [5, 3], [4, 5],
+  ];
+  for (const [x, y] of partialScanSetup) {
+    assert.strictEqual(Module._playerMove(x, y), 0, `partial scan setup move (${x},${y}) should be legal`);
+  }
+  Module._aiMove();
+  const partialScanScore = Module._wasmGetLastSearchScore();
+  assert(
+    !inAllLostBand(partialScanScore),
+    `AI must not call this position lost off a partial scan (got ${partialScanScore})`
+  );
+  console.log('PASS: AI does not claim a proven loss from a partially scanned root');
+
+  // ...and the fix must not suppress the real thing: a position that actually
+  // is lost still has to be reported as lost.
+  Module._initGame();
+  Module._setDifficultyLevel(2);
+  Module._setTimeLimit(2000);
+  const provenLostSetup = [
+    [7, 7], [7, 6], [6, 7], [8, 7], [6, 5], [6, 6], [5, 6], [7, 8],
+    [4, 7], [3, 8], [7, 4], [8, 3], [5, 7], [3, 7], [5, 5], [5, 8],
+    [5, 4], [5, 3], [4, 5], [3, 5], [3, 4], [2, 3], [4, 4],
+  ];
+  for (const [x, y] of provenLostSetup) {
+    assert.strictEqual(Module._playerMove(x, y), 0, `lost setup move (${x},${y}) should be legal`);
+  }
+  Module._aiMove();
+  const lostScore = Module._wasmGetLastSearchScore();
+  assert(
+    inAllLostBand(lostScore),
+    `AI must still report this forced loss (got ${lostScore})`
+  );
+  console.log('PASS: AI still reports a proven loss when the position really is lost');
 }, 1000);
 
 function snapshotBoard() {

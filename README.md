@@ -153,6 +153,7 @@ D:\gomoku\
 | `getLastSearchDepth()` | 获取最后搜索深度 |
 | `getLastSearchNodes()` | 获取最后搜索节点数 |
 | `getLastSearchTimeMs()` | 获取最后搜索耗时 (ms) |
+| `getLastSearchScore()` | 获取最后搜索的根节点评分；落在 `[-10000000, -9999001]` 区间表示「所有着法均已证败」（该结论只在候选完整扫描后成立） |
 
 ## 性能
 
