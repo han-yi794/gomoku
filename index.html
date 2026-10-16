@@ -352,6 +352,7 @@
         let aiVsAISpeed = 500;     // ms per move
         let aiVsAITimer = null;
         let moveHistory = [];  // 棋谱记录 [{x, y, player, moveNum}]
+        let difficultyLog = [];  // 本局难度生效区间 [{ply, label}]，供棋谱还原真实难度
         // 对局代次：newGame/undo 时递增，用于作废已调度但尚未执行的 AI 回调，
         // 防止旧棋盘快照与新棋盘做 diff 时产生幽灵棋谱记录
         let gameGen = 0;
@@ -628,6 +629,11 @@
             }, 50);
         }
         
+        function difficultyLabel() {
+            const sel = document.getElementById('difficulty-select');
+            return sel.options[sel.selectedIndex].text;
+        }
+        
         function newGame() {
             if (!moduleReady) return;
             
@@ -640,6 +646,7 @@
             isAIThinking = false;
             aiVsAIPaused = false;
             moveHistory = [];  // 清空棋谱
+            difficultyLog = [{ ply: 1, label: difficultyLabel() }];
             
             if (aiVsAITimer) {
                 clearTimeout(aiVsAITimer);
@@ -701,6 +708,20 @@
         window.addEventListener('resize', requestResize);
         window.addEventListener('orientationchange', () => setTimeout(requestResize, 150));
         
+        // 难度立即生效：此前只有「新游戏」才读取下拉框，对局中途切换难度
+        // 会静默失效——棋谱抬头却按显示值记录，导致记录与实际难度不符。
+        // 因此同时记录难度变更点，让棋谱能还原每一手实际使用的难度。
+        document.getElementById('difficulty-select').addEventListener('change', function() {
+            if (!moduleReady) return;
+            Module._setDifficultyLevel(parseInt(this.value));
+            const label = this.options[this.selectedIndex].text;
+            if (moveHistory.length === 0) {
+                difficultyLog = [{ ply: 1, label: label }];  // 尚未落子，整局按新难度
+            } else {
+                difficultyLog.push({ ply: moveHistory.length + 1, label: label });
+            }
+        });
+        
         document.getElementById('mode-select').addEventListener('change', function() {
             gameMode = this.value;
             document.getElementById('mode-text').textContent = 
@@ -742,7 +763,10 @@
             let record = '五子棋对局记录\n';
             record += '================\n';
             record += `日期: ${new Date().toLocaleString()}\n`;
-            record += `难度: ${document.getElementById('difficulty-select').options[document.getElementById('difficulty-select').selectedIndex].text}\n`;
+            record += `难度: ${difficultyLog.length ? difficultyLog[0].label : difficultyLabel()}\n`;
+            for (let i = 1; i < difficultyLog.length; i++) {
+                record += `难度变更: 第${difficultyLog[i].ply}手起 → ${difficultyLog[i].label}\n`;
+            }
             record += `总步数: ${moveHistory.length}\n`;
             record += '================\n\n';
             
