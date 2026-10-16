@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>五子棋 AI - Gomoku AI</title>
     <!-- 内联 SVG 图标：避免请求 favicon.ico 产生 404 -->
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23DEB887'/%3E%3Ccircle cx='11' cy='16' r='5' fill='%23111'/%3E%3Ccircle cx='21' cy='16' r='5' fill='%23fff' stroke='%23111'/%3E%3C/svg%3E">
@@ -17,6 +17,7 @@
             justify-content: center;
             align-items: center;
             color: #eee;
+            padding-bottom: env(safe-area-inset-bottom);
         }
         
         .container {
@@ -25,12 +26,16 @@
             padding: 20px;
             flex-wrap: wrap;
             justify-content: center;
+            /* auto 外边距替代 align-items:center：内容比视口高时不会把顶部裁掉 */
+            margin: auto;
+            width: 100%;
         }
         
         .game-area {
             display: flex;
             flex-direction: column;
             align-items: center;
+            max-width: 100%;
         }
         
         canvas {
@@ -38,6 +43,13 @@
             border-radius: 8px;
             box-shadow: 0 10px 30px rgba(0,0,0,0.5);
             cursor: pointer;
+            display: block;
+            max-width: 100%;
+            /* 棋盘上不触发双击缩放/滚动，点按手感等同原生 app */
+            touch-action: none;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
         }
         
         .controls {
@@ -193,15 +205,66 @@
             text-align: center;
         }
         
+        /* ============= 响应式 ============= */
         @media (max-width: 800px) {
             .container {
                 flex-direction: column;
                 align-items: center;
+                gap: 10px;
+                padding: 10px;
+                padding-left: max(10px, env(safe-area-inset-left));
+                padding-right: max(10px, env(safe-area-inset-right));
             }
             .controls {
                 width: 100%;
-                max-width: 400px;
+                max-width: 420px;
+                padding: 14px;
             }
+            .mode-info { margin-top: 8px; padding: 6px; }
+            .title {
+                font-size: 20px;
+                margin-bottom: 12px;
+            }
+            button {
+                min-height: 44px;   /* 触控目标下限 */
+                font-size: 15px;
+                padding: 12px 8px;
+            }
+            .btn-group { gap: 8px; }
+            .control-group { margin-bottom: 10px; }
+            .control-group select,
+            .control-group input[type="range"] { padding: 10px 8px; font-size: 16px; }
+            .status { margin-top: 14px; padding: 12px; }
+            /* 统计区改两列，省下的高度让按钮尽量留在首屏 */
+            .stats {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 4px 12px;
+                margin-top: 10px;
+                padding: 10px;
+            }
+            .stats div { margin: 0; }
+        }
+
+        /* 手机横屏（矮视口）：棋盘与控制区并排，避免整页上下滚动 */
+        @media (orientation: landscape) and (max-height: 560px) {
+            .container {
+                flex-direction: row;
+                align-items: center;
+                gap: 12px;
+                padding: 8px;
+            }
+            .controls {
+                max-width: 320px;
+                padding: 14px;
+                max-height: calc(100vh - 16px);
+                overflow-y: auto;   /* 兜底：面板再长也不撑高整页 */
+            }
+            .title { font-size: 18px; margin-bottom: 8px; }
+            .mode-info { margin-top: 8px; padding: 6px; }
+            .control-group { margin-bottom: 8px; }
+            /* 搜索深度/节点数属于调试信息，矮视口优先保证棋盘与操作可用 */
+            .stats { display: none; }
         }
     </style>
 </head>
@@ -300,11 +363,50 @@
         const CELL_SIZE = 40;
         const PADDING = 20;
         const CANVAS_SIZE = CELL_SIZE * (BOARD_SIZE - 1) + PADDING * 2;
-        canvas.width = CANVAS_SIZE;
-        canvas.height = CANVAS_SIZE;
-        
+        // 逻辑坐标 → 画布像素的缩放系数。绘制代码统一使用 600x600 逻辑坐标，
+        // 由 ctx.setTransform 映射到实际像素，手机上高分屏也不会糊。
+        let boardScale = 1;
+        let resizePending = false;
+
+        // 按视口算出棋盘的 CSS 显示边长：竖屏按宽度收敛，手机横屏（矮视口）
+        // 按高度收敛，保证棋盘始终完整可见、不需要滚动。
+        function computeBoardDisplaySize() {
+            const gutter = 34;   // 容器 padding + 棋盘边框
+            let available = window.innerWidth - gutter;
+            const isShortLandscape = window.innerWidth > window.innerHeight &&
+                                    window.innerHeight < 560;
+            if (isShortLandscape) {
+                available = Math.min(available, window.innerHeight - 80);
+            }
+            return Math.max(240, Math.min(CANVAS_SIZE, Math.floor(available)));
+        }
+
+        function resizeBoard() {
+            const display = computeBoardDisplaySize();
+            canvas.style.width = display + 'px';
+            canvas.style.height = display + 'px';
+            // 背板分辨率按显示尺寸 × 设备像素比，避免高分屏放大模糊
+            const backing = Math.round(display * Math.min(window.devicePixelRatio || 1, 3));
+            if (canvas.width !== backing) {
+                canvas.width = backing;
+                canvas.height = backing;
+            }
+            boardScale = canvas.width / CANVAS_SIZE;
+            drawBoard();
+        }
+
+        function requestResize() {
+            if (resizePending) return;
+            resizePending = true;
+            requestAnimationFrame(() => {
+                resizePending = false;
+                resizeBoard();
+            });
+        }
+
         // ============= 渲染函数 =============
         function drawBoard() {
+            ctx.setTransform(boardScale, 0, 0, boardScale, 0, 0);
             ctx.fillStyle = '#DEB887';
             ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
             
@@ -584,13 +686,20 @@
         // ============= 事件监听 =============
         canvas.addEventListener('click', function(e) {
             const rect = canvas.getBoundingClientRect();
-            const x = Math.round((e.clientX - rect.left - PADDING) / CELL_SIZE);
-            const y = Math.round((e.clientY - rect.top - PADDING) / CELL_SIZE);
-            
+            if (!rect.width || !rect.height) return;
+            // 棋盘按视口缩放显示，先把屏幕坐标换算回 600x600 逻辑坐标再定位格点
+            const logicX = (e.clientX - rect.left) * (CANVAS_SIZE / rect.width);
+            const logicY = (e.clientY - rect.top) * (CANVAS_SIZE / rect.height);
+            const x = Math.round((logicX - PADDING) / CELL_SIZE);
+            const y = Math.round((logicY - PADDING) / CELL_SIZE);
+
             if (x >= 0 && x < BOARD_SIZE && y >= 0 && y < BOARD_SIZE) {
                 makeHumanMove(x, y);
             }
         });
+
+        window.addEventListener('resize', requestResize);
+        window.addEventListener('orientationchange', () => setTimeout(requestResize, 150));
         
         document.getElementById('mode-select').addEventListener('change', function() {
             gameMode = this.value;
@@ -700,7 +809,10 @@
             moduleReady = true;
             newGame();
         }
-        
+
+        // 先按视口尺寸初始化棋盘，引擎就绪后再重绘棋子
+        resizeBoard();
+
         // 引擎若在上面的桥接之前就绪，这里补一次；否则由桥接回调触发。
         window.__engineReadyHook = onModuleReady;
         if (window.__engineReady ||
