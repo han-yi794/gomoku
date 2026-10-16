@@ -264,7 +264,20 @@
         </div>
     </div>
     
-    
+    <script>
+        window.Module = window.Module || {};
+
+        // 引擎就绪桥接。引擎异步实例化 WASM，缓存命中时它可能在本页面后续脚本
+        // 挂上 onRuntimeInitialized 之前就跑完 run()，那时回调尚未赋值、之后
+        // 永不触发（表现为棋盘能读引擎但整页无法落子）。所以在引擎脚本之前
+        // 先接管这个回调，并记录就绪时刻，两种先后顺序都能收敛到同一个入口。
+        window.__engineReady = false;
+        window.__engineReadyHook = null;
+        window.Module.onRuntimeInitialized = function() {
+            window.__engineReady = true;
+            if (window.__engineReadyHook) window.__engineReadyHook();
+        };
+    </script>
     <script src="gomoku.js"></script>
     <script>
         // ============= 全局状态 =============
@@ -683,13 +696,16 @@
         
         // ============= 初始化 =============
         function onModuleReady() {
+            if (moduleReady) return;  // 两种就绪路径可能同时到达
             moduleReady = true;
             newGame();
         }
         
-        // 等待 WASM 模块加载
-        if (typeof Module !== 'undefined') {
-            Module.onRuntimeInitialized = onModuleReady;
+        // 引擎若在上面的桥接之前就绪，这里补一次；否则由桥接回调触发。
+        window.__engineReadyHook = onModuleReady;
+        if (window.__engineReady ||
+            (typeof Module !== 'undefined' && typeof Module._getCell === 'function')) {
+            onModuleReady();
         }
     </script>
 </body>
