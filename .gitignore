@@ -1,0 +1,17 @@
+# 编译产物：由 build.ps1 / package.ps1 生成
+build/
+dist/
+
+# 调试残留
+*.log
+.debug-journal.md
+.debug*.log
+
+# 浏览器自动化产物
+.playwright-mcp/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
