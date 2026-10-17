@@ -200,5 +200,7 @@ int64_t getLastSearchTimeMs();
 // 上一次搜索的根节点评分：处于 [-WIN_THRESHOLD, -(WIN_THRESHOLD-999)] 区间
 // 表示「所有着法都已证败」（该结论只在候选完整扫描后才成立）
 int64_t getLastSearchScore();
+// 当前局面轮走方是否存在连续冲四必胜（VCF），供自检/测试
+bool hasVcfWin(Board& board);
 
 #endif // GOMOKU_ENGINE_H

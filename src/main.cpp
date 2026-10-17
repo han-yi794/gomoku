@@ -173,6 +173,12 @@ long long wasmGetLastSearchTimeMs() {
     return (long long)::getLastSearchTimeMs();
 }
 
+// 当前局面轮走方是否存在连续冲四必胜（1=是，0=否）
+EMSCRIPTEN_KEEPALIVE
+int wasmHasVcfWin() {
+    return hasVcfWin(g_board) ? 1 : 0;
+}
+
 // 获取上一次搜索的根节点评分（用于自检：是否给出「全部已证败」结论）
 EMSCRIPTEN_KEEPALIVE
 long long wasmGetLastSearchScore() {

@@ -684,6 +684,186 @@ static int64_t negamax(Board& board, int64_t alpha, int64_t beta, int depth, uin
     return bestScore;
 }
 
+// ============= VCF（连续冲四杀）搜索 =============
+//
+// 常规 alpha-beta 在困难档 12s 只能到 8-9 层，而「连冲四」型杀棋常需要 10 层
+// 以上才看得见（实测：某必败局面的证明恰好从 depth 8 才出现，从更早一手出发
+// 需要 depth 10，引擎够不到，于是把必败局面评成了 +4600 万）。
+//
+// VCF 只考虑造四的着法：对手每一手都被迫挡五，分支比全宽搜索窄一两个数量级，
+// 同样时间能搜到十几手冲四的深度，正好补这个盲区。
+//
+// 约定：搜索期间攻击方始终轮到自己走；落子/撤子用 board.set，不触碰历史与回合。
+
+static constexpr int VCF_MAX_FOURS = 16;       // 最多连续冲四手数（进攻用）
+// 防守只挡「短连冲四」。长链（十几手冲四）实战几乎兑现不了，而被它剔掉的
+// 往往是「挡一手」这类拖延着法——局面本来就输时反而更差。实测：某个已必败
+// 局面上黑棋的取胜链长 13 手冲四，若一并剔除，引擎会放弃挡四直接输。
+static constexpr int VCF_DEFENSE_FOURS = 6;
+static constexpr int VCF_MAX_FOUR_MOVES = 16;  // 单节点最多尝试的造四着法
+static constexpr int VCF_MAX_FIVE_PTS = 8;     // 单节点最多收集的五连点
+static int g_vcfNodes = 0;                     // 节点计数（独立于主搜索，用于限时）
+static int g_vcfNodeLimit = 3000000;           // 节点上限兜底
+static int g_vcfWinFours = 0;
+
+struct VcfPoint { int x, y; };
+
+// 攻击方在 (x,y) 落子后，经过该点的四条线上「再落一子即成五连」的空点。
+// 新出现的五连点必然包含这一手，所以只看这四条线即可。
+static int vcfFivePointsAround(const Board& b, int x, int y, int attacker,
+                               VcfPoint* out, int maxOut) {
+    int count = 0;
+    for (int d = 0; d < 4; d++) {
+        int val[9], px[9], py[9];
+        for (int k = -4; k <= 4; k++) {
+            int i = k + 4;
+            int nx = x + DX[d] * k, ny = y + DY[d] * k;
+            if (!b.inBounds(nx, ny)) {
+                val[i] = -2; px[i] = -1; py[i] = -1;
+            } else {
+                val[i] = b.get(nx, ny); px[i] = nx; py[i] = ny;
+            }
+        }
+        for (int s = 0; s + 5 <= 9; s++) {
+            int own = 0, empt = 0, ei = -1;
+            for (int t = 0; t < 5; t++) {
+                if (val[s + t] == attacker) own++;
+                else if (val[s + t] == EMPTY) { empt++; ei = s + t; }
+            }
+            if (own == 4 && empt == 1 && ei >= 0 && px[ei] >= 0) {
+                bool dup = false;
+                for (int i = 0; i < count && i < maxOut; i++) {
+                    if (out[i].x == px[ei] && out[i].y == py[ei]) { dup = true; break; }
+                }
+                if (!dup) {
+                    if (count < maxOut) { out[count].x = px[ei]; out[count].y = py[ei]; }
+                    count++;
+                }
+            }
+        }
+    }
+    return count;
+}
+
+// 某方「立即成五」的点数（最多计数 2 个即可区分 0/1/多），可选出第一个点
+static int vcfCountImmediateFives(const Board& b, int player, VcfPoint* firstOut) {
+    int count = 0;
+    for (int y = 0; y < BOARD_SIZE; y++) {
+        for (int x = 0; x < BOARD_SIZE; x++) {
+            if (b.get(x, y) != EMPTY) continue;
+            bool nearStone = false;
+            for (int dy = -NEIGHBOR_RADIUS; dy <= NEIGHBOR_RADIUS && !nearStone; dy++) {
+                for (int dx = -NEIGHBOR_RADIUS; dx <= NEIGHBOR_RADIUS && !nearStone; dx++) {
+                    if (dx == 0 && dy == 0) continue;
+                    int nx = x + dx, ny = y + dy;
+                    if (b.inBounds(nx, ny) && b.get(nx, ny) != EMPTY) nearStone = true;
+                }
+            }
+            if (!nearStone) continue;
+            if (createsFive(b, x, y, player)) {
+                if (count == 0 && firstOut) { firstOut->x = x; firstOut->y = y; }
+                if (++count >= 2) return count;
+            }
+        }
+    }
+    return count;
+}
+
+static inline bool vcfTimeUp(int64_t deadlineMs) {
+    if (g_vcfNodes > g_vcfNodeLimit) return true;    // 节点上限兜底
+    if ((g_vcfNodes & 0x3F) != 0) return false;      // 每 64 节点查一次时间
+    return getElapsedMs() > deadlineMs;
+}
+
+// 递归核：attacker 轮到自己走，能否靠连续冲四取胜。
+// rootX/rootY 仅在顶层传入，成功时写出取胜的第一手。
+static bool vcfSearch(Board& b, int attacker, int defender, int foursLeft,
+                      int64_t deadlineMs, int* rootX, int* rootY) {
+    if (foursLeft <= 0) return false;
+    g_vcfNodes++;
+    if (vcfTimeUp(deadlineMs)) return false;
+
+    // 后手若有立即成五的点，攻击方的四必须正好挡在它上面，否则后手抢先成五
+    VcfPoint defFive;
+    int defFiveCount = vcfCountImmediateFives(b, defender, &defFive);
+
+    struct FourMove { int x, y, pts; VcfPoint first; };
+    FourMove fm[VCF_MAX_FOUR_MOVES];
+    int fmN = 0;
+
+    for (int y = 0; y < BOARD_SIZE; y++) {
+        for (int x = 0; x < BOARD_SIZE; x++) {
+            if (b.get(x, y) != EMPTY) continue;
+            bool nearStone = false;
+            for (int dy = -NEIGHBOR_RADIUS; dy <= NEIGHBOR_RADIUS && !nearStone; dy++) {
+                for (int dx = -NEIGHBOR_RADIUS; dx <= NEIGHBOR_RADIUS && !nearStone; dx++) {
+                    if (dx == 0 && dy == 0) continue;
+                    int nx = x + dx, ny = y + dy;
+                    if (b.inBounds(nx, ny) && b.get(nx, ny) != EMPTY) nearStone = true;
+                }
+            }
+            if (!nearStone) continue;
+
+            b.set(x, y, attacker);
+            bool five = createsFive(b, x, y, attacker);
+            VcfPoint pts[VCF_MAX_FIVE_PTS];
+            int n = five ? 0 : vcfFivePointsAround(b, x, y, attacker, pts, VCF_MAX_FIVE_PTS);
+            b.set(x, y, EMPTY);
+
+            if (five) {
+                // 直接成五，后手来不及
+                if (rootX) { *rootX = x; *rootY = y; }
+                g_vcfWinFours = VCF_MAX_FOURS - foursLeft + 1;
+                return true;
+            }
+            if (n == 0) continue;            // 不是造四着法
+            if (fmN < VCF_MAX_FOUR_MOVES) {
+                fm[fmN].x = x; fm[fmN].y = y; fm[fmN].pts = n;
+                fm[fmN].first = pts[0];
+                fmN++;
+            }
+        }
+    }
+
+    if (fmN == 0) return false;              // 没有造四着法，VCF 到此为止
+
+    for (int i = 0; i < fmN; i++) {
+        int px = fm[i].x, py = fm[i].y;
+        // 后手成五在先：除非这一手正好挡掉它（且只有一个成五点）
+        if (defFiveCount >= 2) continue;
+        if (defFiveCount == 1 && !(px == defFive.x && py == defFive.y)) continue;
+
+        if (fm[i].pts >= 2) {
+            // 活四/双四：对面挡不全
+            if (rootX) { *rootX = px; *rootY = py; }
+            g_vcfWinFours = VCF_MAX_FOURS - foursLeft + 1;
+            return true;
+        }
+
+        b.set(px, py, attacker);
+        b.set(fm[i].first.x, fm[i].first.y, defender);   // 被迫挡五
+        bool ok = vcfSearch(b, attacker, defender, foursLeft - 1, deadlineMs, nullptr, nullptr);        b.set(fm[i].first.x, fm[i].first.y, EMPTY);
+        b.set(px, py, EMPTY);
+        if (ok) {
+            if (rootX) { *rootX = px; *rootY = py; }
+            return true;                     // 手数由检测到必胜的那一层记录
+        }
+    }
+    return false;
+}
+
+// 当前局面轮走方是否存在「连续冲四」必胜（VCF）。
+// 供自检/测试使用：返回 true 表示存在只靠冲四就能赢的线索。
+bool hasVcfWin(Board& board) {
+    g_vcfNodes = 0;
+    const int savedLimit = g_vcfNodeLimit;
+    g_vcfNodeLimit = 200000;                 // 查询用途：快速给出结论
+    int attacker = board.getPlayer();
+    int defender = (attacker == BLACK) ? WHITE : BLACK;
+    bool win = vcfSearch(board, attacker, defender, VCF_MAX_FOURS, INT64_MAX, nullptr, nullptr);
+    g_vcfNodeLimit = savedLimit;    return win;
+}
+
 // ============= 迭代加深搜索 =============
 
 SearchResult findBestMove(Board& board) {
@@ -768,6 +948,52 @@ SearchResult findBestMove(Board& board) {
         [](const Move& a, const Move& b) {
             return a.score > b.score;
         });
+
+    // ===== VCF 战术层 =====
+    // 1) 进攻：自己能连续冲四取胜就直接走（已证必胜，无需再搜）
+    {
+        int vcfX = -1, vcfY = -1;
+        g_vcfNodes = 0;
+        if (vcfSearch(board, rootPlayer, rootOpponent, VCF_MAX_FOURS,
+                      g_timeBudgetMs / 5, &vcfX, &vcfY)) {
+            result.bestX = vcfX;
+            result.bestY = vcfY;
+            result.bestScore = WIN_THRESHOLD;
+            result.searchDepth = 2 * g_vcfWinFours;   // 冲破四手数折算成层数
+            result.nodesVisited = g_nodesVisited;
+            result.elapsedMs = getElapsedMs();
+            result.timedOut = false;
+            g_lastSearchDepth = result.searchDepth;
+            g_lastSearchNodes = result.nodesVisited;
+            g_lastSearchTimeMs = result.elapsedMs;
+            g_lastSearchScore = result.bestScore;
+            return result;
+        }
+    }
+
+    // 2) 防守：排除「走完之后对手能连续冲四取胜」的候选（除非全部如此）
+    {
+        g_vcfNodes = 0;
+        const int64_t vcfDeadline = g_timeBudgetMs * 3 / 10;  // 本阶段最多占 30%
+        std::vector<Move> safe;
+        safe.reserve(rootCandidates.size());
+        int banned = 0;
+        for (const auto& c : rootCandidates) {
+            if (getElapsedMs() > vcfDeadline) {   // 超时不再剔除，交给主搜索
+                safe.push_back(c);
+                continue;
+            }
+            board.set(c.pos.x, c.pos.y, rootPlayer);
+            bool oppWin = vcfSearch(board, rootOpponent, rootPlayer, VCF_DEFENSE_FOURS,
+                                    vcfDeadline, nullptr, nullptr);
+            board.set(c.pos.x, c.pos.y, EMPTY);
+            if (oppWin) banned++;
+            else safe.push_back(c);
+        }
+        if (banned > 0 && !safe.empty()) {
+            rootCandidates.swap(safe);
+        }
+    }
 
     // 迭代加深
     for (int depth = 1; depth <= g_maxDepth; depth++) {

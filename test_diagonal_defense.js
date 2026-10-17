@@ -223,12 +223,10 @@ setTimeout(() => {
   );
   console.log('PASS: AI finds the sequential double threat (forced block then five)');
 
-  // A "every move is proven lost" verdict is only valid after the whole root
-  // candidate list has been scanned. With a partial scan (time cutoff mid-list)
-  // the engine used to promote that verdict anyway, so the same position
-  // flipped between "winning" and "proven lost" depending on the time budget.
-  // The all-lost verdict occupies [-WIN_THRESHOLD, -(WIN_THRESHOLD-999)].
-  const inAllLostBand = (score) => score >= -10000000 && score <= -9999001;
+  // The all-lost verdict occupies [-(WIN_THRESHOLD+999), -(WIN_THRESHOLD-999)]:
+  // a terminal loss is -WIN_THRESHOLD with the tactical tie-break clamped to
+  // +/-999.
+  const inAllLostBand = (score) => score >= -10000999 && score <= -9999001;
 
   Module._initGame();
   Module._setDifficultyLevel(2);
@@ -269,6 +267,64 @@ setTimeout(() => {
     `AI must still report this forced loss (got ${lostScore})`
   );
   console.log('PASS: AI still reports a proven loss when the position really is lost');
+
+  // VCF (continuous-four) win: black forces with (8,5) [a four the defender must
+  // block at (9,5)], then (11,8) makes an open four and the win is unavoidable.
+  // That is a 5-ply chain, so the easy engine's depth-4 full-width search cannot
+  // see it - only the four-only VCF search reaches it.
+  Module._initGame();
+  Module._setDifficultyLevel(0);
+  Module._setTimeLimit(1000);
+  const vcfWinSetup = [
+    [5, 5], [0, 0], [6, 5], [2, 0], [7, 5], [0, 2], [9, 6], [2, 2],
+    [10, 7], [4, 5],
+  ];
+  for (const [x, y] of vcfWinSetup) {
+    assert.strictEqual(Module._playerMove(x, y), 0, `vcf win setup move (${x},${y}) should be legal`);
+  }
+  assert.strictEqual(Module._getCurrentPlayer(), 1, 'black must be on move for this fixture');
+  assert.strictEqual(Module._wasmHasVcfWin(), 1, 'black must have a continuous-four win in this fixture');
+  Module._aiMove();
+  assert(
+    Module._wasmGetLastSearchScore() >= 10000000,
+    'AI must claim the continuous-four win instead of evaluating it as unclear'
+  );
+  assert.strictEqual(Module._getCell(8, 5), 1, 'AI must start the four chain at (8,5)');
+  console.log('PASS: AI finds the continuous-four (VCF) win');
+
+  // ...and the other direction: the same structure one ply earlier must be
+  // defused. Whatever white plays, black must not be left with a VCF win.
+  Module._initGame();
+  Module._setDifficultyLevel(0);
+  Module._setTimeLimit(1000);
+  const vcfDefenseSetup = [
+    [5, 5], [0, 0], [6, 5], [2, 0], [7, 5], [0, 2], [9, 6], [2, 2],
+    [10, 7], [4, 5], [14, 14],
+  ];
+  for (const [x, y] of vcfDefenseSetup) {
+    assert.strictEqual(Module._playerMove(x, y), 0, `vcf defense setup move (${x},${y}) should be legal`);
+  }
+  assert.strictEqual(Module._getCurrentPlayer(), 2, 'white must be on move for this fixture');
+  Module._aiMove();
+  assert.strictEqual(
+    Module._wasmHasVcfWin(), 0,
+    'white must take away the opponent continuous-four win'
+  );
+  console.log('PASS: AI defuses the opponent continuous-four (VCF) win');
+
+  // premise check: the threat above is real - a wasted white move hands black the win
+  Module._initGame();
+  Module._setDifficultyLevel(0);
+  Module._setTimeLimit(1000);
+  for (const [x, y] of vcfDefenseSetup) {
+    assert.strictEqual(Module._playerMove(x, y), 0, `vcf premise move (${x},${y}) should be legal`);
+  }
+  assert.strictEqual(Module._playerMove(7, 7), 0, 'wasted white move should be legal');
+  assert.strictEqual(
+    Module._wasmHasVcfWin(), 1,
+    'the fixture threat must be real: a wasted move leaves black a VCF win'
+  );
+  console.log('PASS: the VCF defensive fixture really is dangerous');
 }, 1000);
 
 function snapshotBoard() {
