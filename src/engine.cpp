@@ -441,6 +441,27 @@ static constexpr int64_t OPEN_THREE_ENDPOINT_BONUS = 5;
 // 争夺激烈程度：仅用于打破近似并列，不改变真实威胁的优先级
 static constexpr int64_t CONTESTED_WEIGHT = 100;
 
+// ===== 将杀距离 =====
+// 终局分不再固定为 +-WIN_THRESHOLD，而是把「距离」编进分值：
+//   赢得越快分越高、输得越晚分越高。
+// 否则引擎对「立刻输」和「十步后输」一视同仁（都是 -1000 万），
+// 必败局面里的取舍就只能靠位置类加成猜，实测会挑到输得更快的一手。
+// 距离一格用 8 分，保证同距离比较不会被子项 tie-break（最多 +-3）盖过。
+static constexpr int64_t MATE_PLY_VALUE = 8;
+static constexpr int64_t MATE_MAX_PLY = 32;
+static constexpr int64_t WIN_SCORE_FLOOR = WIN_THRESHOLD - 1 - MATE_MAX_PLY * MATE_PLY_VALUE;
+static constexpr int64_t LOSS_SCORE_CEIL = -WIN_SCORE_FLOOR;
+static constexpr int64_t TERMINAL_TIE = 3;   // 终局分只允许这么点的 tie-break
+
+// 距根 k 层发生：k 越大越晚
+static inline int64_t mateWinScore(int64_t k) {
+    if (k > MATE_MAX_PLY) k = MATE_MAX_PLY;
+    return WIN_THRESHOLD - 1 - k * MATE_PLY_VALUE;
+}
+static inline int64_t mateLossScore(int64_t k) { return -mateWinScore(k); }
+// 节点剩余深度 d 对应的距离（同一轮搜索内单调即可）
+static inline int64_t mateDistFromDepth(int64_t d) { return MATE_MAX_PLY - d; }
+
 static int64_t potentialThreatScore(Board& board, int player) {
     int64_t score = 0;
     for (int y = 0; y < BOARD_SIZE; ++y) {
@@ -604,7 +625,7 @@ static int64_t negamax(Board& board, int64_t alpha, int64_t beta, int depth, uin
     if (board.moveCount() > 0) {
         const Move& lastMove = board.getHistory(board.moveCount() - 1);
         if (board.checkWin(lastMove.pos.x, lastMove.pos.y) != 0) {
-            return -WIN_THRESHOLD;  // 上一手赢了，当前方输了
+            return mateLossScore(mateDistFromDepth(depth));  // 上一手赢了，当前方输了（越晚输分越高）
         }
     }
     
@@ -655,7 +676,7 @@ static int64_t negamax(Board& board, int64_t alpha, int64_t beta, int depth, uin
         // 检查是否获胜
         int64_t score;
         if (board.checkWin(move.pos.x, move.pos.y) != 0) {
-            score = WIN_THRESHOLD;
+            score = mateWinScore(mateDistFromDepth(depth));
         } else {
             score = -negamax(board, -beta, -alpha, depth - 1, newHash);
         }
@@ -1350,7 +1371,7 @@ SearchResult findBestMove(Board& board) {
             // 搜索（窗口必须使用原始分：含战术加成的分会污染后续候选的窗口）
             int64_t score;
             if (board.checkWin(move.pos.x, move.pos.y) != 0) {
-                score = WIN_THRESHOLD;
+                score = mateWinScore(mateDistFromDepth(depth));
             } else {
                 score = -negamax(board, -WIN_THRESHOLD - 1, -bestRawInIter - 1, depth - 1, newHash);
             }
@@ -1360,10 +1381,10 @@ SearchResult findBestMove(Board& board) {
 
             int64_t rawScore = score;
             if (move.tactical_adjustment != 0) {
-                if (rawScore > -WIN_THRESHOLD && rawScore < WIN_THRESHOLD) {
+                if (rawScore > LOSS_SCORE_CEIL && rawScore < WIN_SCORE_FLOOR) {
                     score += move.tactical_adjustment;
                 } else {
-                    int64_t tieBreak = std::max<int64_t>(-999, std::min<int64_t>(999, move.tactical_adjustment));
+                    int64_t tieBreak = std::max<int64_t>(-TERMINAL_TIE, std::min<int64_t>(TERMINAL_TIE, move.tactical_adjustment));
                     score += tieBreak;
                 }
             }
@@ -1381,7 +1402,7 @@ SearchResult findBestMove(Board& board) {
                 bestXInIter = move.pos.x;
                 bestYInIter = move.pos.y;
             }
-            if (rawScore > -WIN_THRESHOLD) {
+            if (rawScore > LOSS_SCORE_CEIL) {
                 if (!foundLive || score > bestLiveScore) {
                     bestLiveScore = score;
                     bestLiveX = move.pos.x;
@@ -1394,7 +1415,7 @@ SearchResult findBestMove(Board& board) {
         }
         
         // 真实必胜优先于一切加成；未被证败者次之；全部被证败时才退回原有评选
-        if (bestRawInIter >= WIN_THRESHOLD && bestRawXInIter >= 0) {
+        if (bestRawInIter >= WIN_SCORE_FLOOR && bestRawXInIter >= 0) {
             bestXInIter = bestRawXInIter;
             bestYInIter = bestRawYInIter;
             bestInIter = bestRawInIter;
@@ -1426,7 +1447,7 @@ SearchResult findBestMove(Board& board) {
         if (g_timedOut) break;
         
         // 只有真实搜索分达到必胜阈值才能提前结束，战术排序加成不能触发
-        if (bestRawScore >= WIN_THRESHOLD) break;
+        if (bestRawScore >= WIN_SCORE_FLOOR) break;
         
         // 如果时间不足 10%，提前结束（避免半层被截断）
         if (getElapsedMs() > g_timeBudgetMs * 0.9) break;

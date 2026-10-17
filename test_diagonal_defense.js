@@ -226,7 +226,10 @@ setTimeout(() => {
   // The all-lost verdict occupies [-(WIN_THRESHOLD+999), -(WIN_THRESHOLD-999)]:
   // a terminal loss is -WIN_THRESHOLD with the tactical tie-break clamped to
   // +/-999.
-  const inAllLostBand = (score) => score >= -10000999 && score <= -9999001;
+  // 将杀距离编码后，终局败分 = -(10000000-1-k*8) + tie，k 在 20..32（深度<=12），tie 在 +-3，
+  // 即落在 [-9999843, -9999741] 这条窄带里。「所有着法已证败」必然落在带内；
+  // 活候选虽可能因战术加成取到很负的值（实测 -1741 万），但不落在这条窄带里。
+  const inAllLostBand = (score) => score >= -9999843 && score <= -9999741;
 
   Module._initGame();
   Module._setDifficultyLevel(2);
