@@ -927,7 +927,7 @@ static constexpr int VCT_MAX_MOVES = 8;          // 攻方最多连续威胁手�
 static constexpr int VCT_MAX_THREAT_MOVES = 16;  // 单节点最多枚举的威胁着法
 static constexpr int VCT_MAX_DEF_REPLIES = 16;   // 单节点最多枚举的应手（超出即放弃）
 static int g_vctNodes = 0;
-static int g_vctNodeLimit = 60000;   // 节点上限（实测 20 万节点要 ~2.5s，太贵）
+static int g_vctNodeLimit = 600000;   // 上限与时间期限双保险：实测 45 万节点 ~0.85s
 
 // 注意：VCT 只用于「进攻」（找到自己的必胜线索立即走）。
 // 不做防守剔除——实测它会把必败局面里「挡一手拖延」的着法也一并剔掉，
@@ -977,6 +977,17 @@ static int vctOpenFourMoves(Board& b, int attacker, VcfPoint* out, int maxOut) {
         }
     }
     return count;
+}
+
+// 某方在 (x,y) 落子是否形成造四（下一手即可成五）
+static bool vctIsFourMove(Board& b, int x, int y, int player) {
+    if (b.get(x, y) != EMPTY) return false;
+    b.set(x, y, player);
+    bool five = createsFive(b, x, y, player);
+    VcfPoint pts[VCF_MAX_FIVE_PTS];
+    int n = five ? 1 : vcfFivePointsAround(b, x, y, player, pts, VCF_MAX_FIVE_PTS);
+    b.set(x, y, EMPTY);
+    return n > 0;
 }
 
 // 某方是否有造四着法（下一手即可成五）
@@ -1071,7 +1082,7 @@ static bool vctSearch(Board& b, int attacker, int defender, int movesLeft,
             if (b.get(x, y) != EMPTY) continue;
 
             if (!vctNearStone(b, x, y, NEIGHBOR_RADIUS)) continue;
-            if (++g_vctNodes > g_vctNodeLimit) return false;
+            if (++g_vctNodes > g_vctNodeLimit || vctTimeUp(deadlineMs)) return false;
             if (defFiveCount == 1 && !(x == defFive.x && y == defFive.y)) continue;
 
             b.set(x, y, attacker);
@@ -1104,8 +1115,9 @@ static bool vctSearch(Board& b, int attacker, int defender, int movesLeft,
             VcfPoint w[VCF_MAX_FIVE_PTS];
             int wc = vctOpenFourMoves(b, attacker, w, VCF_MAX_FIVE_PTS);
             if (wc == 0) { b.set(x, y, EMPTY); continue; }
-            // 后手能造四（下一手成五）就可以不理这个三 -> 此路不成立
-            if (vctHasFourMove(b, defender)) { b.set(x, y, EMPTY); continue; }
+            // 后手的造四着法不是一票否决：它只是必须被检查的一路应手。
+            // 真正有没有否决力，交给递归判断——递归在下一层会要求攻方应对
+            // 这个成五威胁（除非攻方能在应对过程中继续取胜）。
 
             // 后手必须用一手拆掉全部活四威胁点，否则攻方下一手成活四
             VcfPoint replies[VCT_MAX_DEF_REPLIES + 1];
@@ -1115,14 +1127,17 @@ static bool vctSearch(Board& b, int attacker, int defender, int movesLeft,
                     if (b.get(dx, dy) != EMPTY) continue;
 
                     if (!vctNearStone(b, dx, dy, 4)) continue;
-                    if (++g_vctNodes > g_vctNodeLimit) { b.set(x, y, EMPTY); return false; }
-                    b.set(dx, dy, defender);
+                    if (++g_vctNodes > g_vctNodeLimit || vctTimeUp(deadlineMs)) { b.set(x, y, EMPTY); return false; }
+                    bool isFour = vctIsFourMove(b, dx, dy, defender);
                     bool stillThreat = false;
-                    for (int i = 0; i < wc && !stillThreat; i++) {
-                        if (vctMakesOpenFour(b, w[i].x, w[i].y, attacker)) stillThreat = true;
+                    if (!isFour) {
+                        b.set(dx, dy, defender);
+                        for (int i = 0; i < wc && !stillThreat; i++) {
+                            if (vctMakesOpenFour(b, w[i].x, w[i].y, attacker)) stillThreat = true;
+                        }
+                        b.set(dx, dy, EMPTY);
                     }
-                    b.set(dx, dy, EMPTY);
-                    if (!stillThreat) {
+                    if (isFour || !stillThreat) {
                         if (rc > VCT_MAX_DEF_REPLIES) continue;   // 超出容量：下面会放弃
                         replies[rc].x = dx; replies[rc].y = dy;
                         rc++;

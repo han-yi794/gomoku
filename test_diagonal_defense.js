@@ -351,6 +351,29 @@ setTimeout(() => {
     'the threat search must prove it quickly, not eat the whole budget'
   );
   console.log('PASS: AI finds the threat-sequence (VCT) win');
+
+  // The deep chain from the 2026-10-17 record: after white's (9,10) black wins by
+  // force, but the full-width search cannot see it (it needs depth 10, the engine
+  // reaches 8). Only the threat search proves it, and only after the defender's
+  // counter-four is handled properly instead of disqualifying every three.
+  Module._initGame();
+  Module._setDifficultyLevel(2);
+  Module._setTimeLimit(12000);
+  const deepChainSetup = [
+    [7, 7], [8, 6], [8, 8], [6, 6], [7, 6], [7, 5], [9, 7], [5, 7],
+    [8, 4], [7, 9], [8, 7], [10, 7], [9, 8], [6, 5], [10, 9], [11, 10],
+    [9, 9], [9, 10],
+  ];
+  for (const [x, y] of deepChainSetup) {
+    assert.strictEqual(Module._playerMove(x, y), 0, `deep chain setup move (${x},${y}) should be legal`);
+  }
+  assert.strictEqual(Module._getCurrentPlayer(), 1, 'black must be on move for this fixture');
+  Module._aiMove();
+  assert(
+    Module._wasmGetLastSearchScore() >= 10000000,
+    'AI must prove the deep threat chain the full-width search cannot reach'
+  );
+  console.log('PASS: AI proves a win that needs more depth than the full search has');
 }, 1000);
 
 function snapshotBoard() {
