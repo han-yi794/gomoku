@@ -1192,7 +1192,8 @@ SearchResult findBestMove(Board& board) {
     // 1b) 进攻（VCT）：连冲四找不到时，再查「三」施压型的连续威胁
     {
         int vctX = -1, vctY = -1;
-        g_vctNodes = 0;        if (vctSearch(board, rootPlayer, rootOpponent, VCT_MAX_MOVES, g_timeBudgetMs / 4, &vctX, &vctY)) {
+        g_vctNodes = 0;
+        if (vctSearch(board, rootPlayer, rootOpponent, VCT_MAX_MOVES, g_timeBudgetMs / 4, &vctX, &vctY)) {
             result.bestX = vctX;
             result.bestY = vctY;
             result.bestScore = WIN_THRESHOLD;
