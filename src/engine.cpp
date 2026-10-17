@@ -865,6 +865,53 @@ bool hasVcfWin(Board& board) {
     g_vcfNodeLimit = savedLimit;    return win;
 }
 
+// ============= 战术搜索置换表 =============
+//
+// 威胁搜索的递归里，同一局面会被不同的走法顺序反复展开（三的应手分支尤其
+// 容易回到同一局面），没有置换表时深链证明的代价是节点数的平方级。
+//
+// 复用规则靠单调性，安全且简单：
+//   - 已证必胜：手数够（>= 立此结论时的手数）就成立
+//   - 未证必胜：手数更少时不成立
+// 「未证必胜」只在搜索穷尽时才是结论；被节点/时间上限打断的返回不带结论，
+// 但缓存它只会让搜索引擎更保守（少报必胜、少剔除候选），不会造成误报。
+struct ThreatTTEntry {
+    uint64_t hash;
+    int8_t depth;      // 立此结论时还剩多少手威胁
+    uint8_t result;    // 0=未证必胜, 1=已证必胜
+    int16_t bestMove;  // y*15+x，必胜时的第一手
+};
+
+static constexpr int THREAT_TT_SIZE = 1 << 18;
+static ThreatTTEntry g_threatTT[THREAT_TT_SIZE];
+
+static inline void threatTtClear() {
+    memset(g_threatTT, 0, sizeof(g_threatTT));
+}
+
+static inline const ThreatTTEntry* threatTtLookup(uint64_t hash) {
+    const ThreatTTEntry& e = g_threatTT[hash & (THREAT_TT_SIZE - 1)];
+    return (e.depth != 0 && e.hash == hash) ? &e : nullptr;
+}
+
+static inline void threatTtStore(uint64_t hash, int depth, bool result, int bestX, int bestY) {
+    if (depth <= 0 || depth > 127) return;
+    ThreatTTEntry& e = g_threatTT[hash & (THREAT_TT_SIZE - 1)];
+    if (e.depth == 0 || e.hash != hash || !result) {   // 已证必胜的结论优先保留
+        e.hash = hash;
+        e.depth = (int8_t)depth;
+        e.result = result ? 1 : 0;
+    }
+    if (result && bestX >= 0 && bestY >= 0) {
+        e.bestMove = (int16_t)(bestY * BOARD_SIZE + bestX);
+    }
+}
+
+// 局面哈希 + 攻方（同一局面可能出现攻守互换的两套结论）
+static inline uint64_t threatKey(const Board& b, int attacker) {
+    return computeHash(b) ^ ((uint64_t)attacker * 0x9E3779B97F4A7C15ULL);
+}
+
 // ============= VCT（连续威胁杀）搜索 =============
 //
 // VCF 只搜造四着法。实战还有一类杀法：先用「三」施压（对手必须拆），再转成冲四杀。
@@ -954,11 +1001,29 @@ static bool vctSearch(Board& b, int attacker, int defender, int movesLeft,
     if (movesLeft <= 0) return false;
     if (++g_vctNodes > g_vctNodeLimit || vctTimeUp(deadlineMs)) return false;
 
+    // 置换表：同一局面被不同走法顺序反复展开时直接复用结论
+    uint64_t th = threatKey(b, attacker);
+    if (const ThreatTTEntry* e = threatTtLookup(th)) {
+        if (e->result) {
+            if (movesLeft >= e->depth) {
+                if (rootX && e->bestMove >= 0) {
+                    *rootX = e->bestMove % BOARD_SIZE;
+                    *rootY = e->bestMove / BOARD_SIZE;
+                }
+                return true;
+            }
+        } else if (movesLeft <= e->depth) {
+            return false;
+        }
+    }
+    const int ttDepth = movesLeft;
+
     // 攻方有成五点：直接成五
     {
         VcfPoint p;
         if (vcfCountImmediateFives(b, attacker, &p) > 0) {
             if (rootX) { *rootX = p.x; *rootY = p.y; }
+            threatTtStore(th, ttDepth, true, p.x, p.y);
             return true;
         }
     }
@@ -1017,10 +1082,13 @@ static bool vctSearch(Board& b, int attacker, int defender, int movesLeft,
             if (five) {                                  // 直接成五
                 b.set(x, y, EMPTY);
                 if (rootX) { *rootX = x; *rootY = y; }
+                threatTtStore(th, ttDepth, true, x, y);
                 return true;
             }
-            if (n >= 2) {                b.set(x, y, EMPTY);
+            if (n >= 2) {                                // 活四 / 双四
+                b.set(x, y, EMPTY);
                 if (rootX) { *rootX = x; *rootY = y; }
+                threatTtStore(th, ttDepth, true, x, y);
                 return true;
             }
             if (n == 1) {                                // 冲四：后手被迫挡
@@ -1028,7 +1096,7 @@ static bool vctSearch(Board& b, int attacker, int defender, int movesLeft,
                 bool ok = vctSearch(b, attacker, defender, movesLeft - 1, deadlineMs, nullptr, nullptr);
                 b.set(pts[0].x, pts[0].y, EMPTY);
                 b.set(x, y, EMPTY);
-                if (ok) { if (rootX) { *rootX = x; *rootY = y; } return true; }
+                if (ok) { if (rootX) { *rootX = x; *rootY = y; } threatTtStore(th, ttDepth, true, x, y); return true; }
                 continue;
             }
 
@@ -1065,8 +1133,10 @@ static bool vctSearch(Board& b, int attacker, int defender, int movesLeft,
             if (rc == 0) {                // 拆不掉 -> 必胜
                 b.set(x, y, EMPTY);
                 if (rootX) { *rootX = x; *rootY = y; }
+                threatTtStore(th, ttDepth, true, x, y);
                 return true;
-            }            bool allLose = true;
+            }
+            bool allLose = true;
             for (int i = 0; i < rc && allLose; i++) {
                 b.set(replies[i].x, replies[i].y, defender);
                 bool ok = vctSearch(b, attacker, defender, movesLeft - 1, deadlineMs, nullptr, nullptr);
@@ -1074,11 +1144,13 @@ static bool vctSearch(Board& b, int attacker, int defender, int movesLeft,
                 if (!ok) allLose = false;
             }
             b.set(x, y, EMPTY);
-            if (allLose) { if (rootX) { *rootX = x; *rootY = y; } return true; }
+            if (allLose) { if (rootX) { *rootX = x; *rootY = y; } threatTtStore(th, ttDepth, true, x, y); return true; }
 
             threatCount++;
         }
     }
+
+    threatTtStore(th, ttDepth, false, -1, -1);
     return false;
 }
 
