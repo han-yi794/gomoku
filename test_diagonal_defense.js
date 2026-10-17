@@ -325,6 +325,32 @@ setTimeout(() => {
     'the fixture threat must be real: a wasted move leaves black a VCF win'
   );
   console.log('PASS: the VCF defensive fixture really is dangerous');
+
+  // VCT: threats beyond pure four-chains. Black has two open threes waiting at
+  // (7,7) and a diagonal one: (6,6) wins - if white blocks the diagonal, (7,7)
+  // makes a double three; if white takes (7,7), the diagonal becomes an open
+  // four. A four-only search sees none of this (the first move is not a four),
+  // so a forced-win claim here only comes from the threat search.
+  Module._initGame();
+  Module._setDifficultyLevel(0);
+  Module._setTimeLimit(1000);
+  const vctSetup = [
+    [5, 7], [0, 0], [6, 7], [2, 0], [7, 5], [0, 2], [7, 6], [2, 2],
+  ];
+  for (const [x, y] of vctSetup) {
+    assert.strictEqual(Module._playerMove(x, y), 0, `vct setup move (${x},${y}) should be legal`);
+  }
+  assert.strictEqual(Module._getCurrentPlayer(), 1, 'black must be on move for this fixture');
+  Module._aiMove();
+  assert(
+    Module._wasmGetLastSearchScore() >= 10000000,
+    'AI must claim the threat-sequence win instead of evaluating it as unclear'
+  );
+  assert(
+    Number(Module._wasmGetLastSearchTimeMs()) < 500,
+    'the threat search must prove it quickly, not eat the whole budget'
+  );
+  console.log('PASS: AI finds the threat-sequence (VCT) win');
 }, 1000);
 
 function snapshotBoard() {
