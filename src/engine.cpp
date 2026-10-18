@@ -452,6 +452,9 @@ static constexpr int64_t MATE_MAX_PLY = 32;
 static constexpr int64_t WIN_SCORE_FLOOR = WIN_THRESHOLD - 1 - MATE_MAX_PLY * MATE_PLY_VALUE;
 static constexpr int64_t LOSS_SCORE_CEIL = -WIN_SCORE_FLOOR;
 static constexpr int64_t TERMINAL_TIE = 3;   // 终局分只允许这么点的 tie-break
+static constexpr int POST_SCAN_MIN_BUDGET = 4000;     // 复核要求的最低时间预算（低难度复核太浅，直接跳过）
+static constexpr size_t POST_SCAN_MAX_FINALISTS = 5;  // 决赛候选数超过这个就不复核
+static bool g_inPostScan = false;                      // 防止复核里再触发复核
 
 // 距根 k 层发生：k 越大越晚
 static inline int64_t mateWinScore(int64_t k) {
@@ -1461,6 +1464,43 @@ SearchResult findBestMove(Board& board) {
         result.bestScore = 0;
     }
     
+    // ===== 决赛候选的「对手应招复核」 =====
+    // VCF 防守过滤会把根候选收窄到两三手（实测 total=3）。直接靠位置类加成在其中
+    // 挑选会挑错——实测把必败的一手评成 +4600 万。这里对这批决赛候选逐个做一次
+    // 「对手应招搜索」，取对手得分最低的一手：等于把富余时间花在最后一层深算上。
+    // 触发条件是「候选数少」而不是「并列」（目标局面三手里最佳分唯一，靠并列根本收不到）。
+    if (!g_inPostScan && result.bestX >= 0 &&
+        g_timeBudgetMs >= POST_SCAN_MIN_BUDGET &&
+        rootCandidates.size() >= 2 && rootCandidates.size() <= POST_SCAN_MAX_FINALISTS &&
+        bestRawScore > LOSS_SCORE_CEIL && bestRawScore < WIN_SCORE_FLOOR) {
+        g_inPostScan = true;
+        const auto savedStart = g_searchStartTime;
+        const int64_t savedBudget = g_timeBudgetMs;
+        const int64_t savedNodes = g_nodesVisited;
+        const bool savedTimedOut = g_timedOut;
+        g_timeBudgetMs = savedBudget / 2;      // 每个决赛候选的复核预算
+        int64_t bestOpp = INT64_MAX;
+        int pickX = result.bestX, pickY = result.bestY;
+        for (size_t i = 0; i < rootCandidates.size(); i++) {
+            board.makeMove(rootCandidates[i].pos.x, rootCandidates[i].pos.y);
+            SearchResult reply = findBestMove(board);
+            board.undo();
+            if (reply.bestX >= 0 && reply.bestScore < bestOpp) {
+                bestOpp = reply.bestScore;
+                pickX = rootCandidates[i].pos.x;
+                pickY = rootCandidates[i].pos.y;
+            }
+        }
+        g_inPostScan = false;
+        g_searchStartTime = savedStart;
+        g_timeBudgetMs = savedBudget;
+        g_nodesVisited = savedNodes;
+        g_timedOut = savedTimedOut;
+        if (bestOpp != INT64_MAX) {
+            result.bestX = pickX;
+            result.bestY = pickY;
+        }
+    }
     result.nodesVisited = g_nodesVisited;
     result.elapsedMs = getElapsedMs();
     result.timedOut = g_timedOut;
