@@ -377,6 +377,52 @@ setTimeout(() => {
     'AI must prove the deep threat chain the full-width search cannot reach'
   );
   console.log('PASS: AI proves a win that needs more depth than the full search has');
+
+  // ===== 中盘让步基线（2026-10-19 两盘实战） =====
+  // 这两个局面里白棋（AI）其实已经必败：黑棋后续用「双活三点」组合取胜。
+  // 在评估函数学会感知这类潜在结构之前，这里锁定的契约是「必须如实上报败局」：
+  //   - 报告分必须落在将杀距离的败势带里（引擎知道自己输、且知道输得多慢）
+  //   - 绝不允许回到历史上那种「必败局面评成 +4600 万大优」的误判
+  // 评估层改进（潜在威胁感知）落地后，这两条会开始失败——届时把它们改成
+  // 「必须不落入败势带」的正向断言。
+  Module._initGame();
+  Module._setDifficultyLevel(2);
+  Module._setTimeLimit(12000);
+  const concession1 = [
+    [7, 7], [5, 6], [6, 8], [8, 6], [6, 6], [8, 8], [6, 7], [6, 9],
+    [5, 7], [4, 7], [6, 5], [6, 4], [8, 7],
+  ];
+  for (const [x, y] of concession1) {
+    assert.strictEqual(Module._playerMove(x, y), 0, `concession1 setup move (${x},${y}) should be legal`);
+  }
+  Module._aiMove();
+  const score1 = Number(Module._wasmGetLastSearchScore());
+  assert(
+    inAllLostBand(score1),
+    `AI must honestly report the midgame concession (got ${score1})`
+  );
+  console.log('PASS: midgame concession honestly reported (game 1, lost at ~ply 30)');
+
+  // game 2: white was already lost before its move 26 (9,5)/(5,5) both lose)
+  Module._initGame();
+  Module._setDifficultyLevel(2);
+  Module._setTimeLimit(12000);
+  const concession2 = [
+    [7, 7], [8, 6], [7, 5], [5, 6], [7, 6], [7, 4], [6, 6], [8, 8],
+    [5, 7], [8, 4], [7, 8], [7, 9], [4, 8], [3, 9], [8, 7], [9, 7],
+    [10, 6], [9, 8], [6, 7], [4, 7], [6, 5], [6, 8], [8, 5], [6, 10],
+    [5, 11],
+  ];
+  for (const [x, y] of concession2) {
+    assert.strictEqual(Module._playerMove(x, y), 0, `concession2 setup move (${x},${y}) should be legal`);
+  }
+  Module._aiMove();
+  const score2 = Number(Module._wasmGetLastSearchScore());
+  assert(
+    inAllLostBand(score2),
+    `AI must honestly report the midgame concession in game 2 (got ${score2})`
+  );
+  console.log('PASS: midgame concession honestly reported (game 2, lost at ~ply 30)');
 }, 1000);
 
 function snapshotBoard() {

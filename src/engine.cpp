@@ -1478,11 +1478,15 @@ SearchResult findBestMove(Board& board) {
         const int64_t savedBudget = g_timeBudgetMs;
         const int64_t savedNodes = g_nodesVisited;
         const bool savedTimedOut = g_timedOut;
-        g_timeBudgetMs = savedBudget / 2;      // 每个决赛候选的复核预算
+        g_timeBudgetMs = (savedBudget / 2 < 8000) ? savedBudget / 2 : 8000;   // 每个决赛候选的复核预算（封顶 8s）
         int64_t bestOpp = INT64_MAX;
         int pickX = result.bestX, pickY = result.bestY;
         for (size_t i = 0; i < rootCandidates.size(); i++) {
+
+            if (getElapsedMs() > savedBudget * 3 / 2) break;   // 复核总时长上限：主搜索之外再加半个预算（12s 档≈18s，20s 档≈30s）
+
             board.makeMove(rootCandidates[i].pos.x, rootCandidates[i].pos.y);
+
             SearchResult reply = findBestMove(board);
             board.undo();
             if (reply.bestX >= 0 && reply.bestScore < bestOpp) {
@@ -1527,8 +1531,8 @@ void setDifficulty(Difficulty level) {
             g_timeBudgetMs = 3000;
             break;
         case Difficulty::HARD:
-            g_maxDepth = 12;
-            g_timeBudgetMs = 12000;
+            g_maxDepth = 16;
+            g_timeBudgetMs = 30000;   // 实测：12s/depth8 在关键局面会漏争线手，60s/depth9 即翻盘；用户接受慢一点
             break;
     }
 }
