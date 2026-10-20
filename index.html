@@ -205,6 +205,12 @@
             text-align: center;
         }
         
+        .win-rate { margin-top: 10px; text-align: center; font-size: 14px; color: #333; }
+        .bar-wrap { width: 260px; height: 7px; border: 1px solid #8B4513; margin: 4px auto 0 auto; background: #fff; overflow: hidden; box-sizing: border-box; }
+        .seg { height: 100%; float: left; box-sizing: border-box; }
+        .seg.black { background: #111; }
+        .seg.white { background: #fff; border-left: 1px solid #8B4513; }
+        
         /* ============= 响应式 ============= */
         @media (max-width: 800px) {
             .container {
@@ -275,6 +281,13 @@
             <div class="mode-info">
                 <span id="mode-text">人机对战模式</span>
             </div>
+        </div>
+        <div class="win-rate" id="win-rate">
+            <div class="bar-wrap">
+                <span class="seg black" id="wr-black" style="width:50%"></span>
+                <span class="seg white" id="wr-white" style="width:50%"></span>
+            </div>
+            <div class="wr-text" id="wr-text">平局 50% / 50%</div>
         </div>
         
         <div class="controls">
@@ -537,6 +550,18 @@
             document.getElementById('think-time').textContent = time || '-';
         }
         
+        // 胜率：引擎评分在 ±WIN_THRESHOLD(1000万) 之间，线性映射到 [0,1]
+        function updateWinRate(score) {
+            var p = 0.5 + score / (2 * 10000000);
+            if (p < 0) p = 0;
+            if (p > 1) p = 1;
+            var b = Math.round(p * 100);
+            var w = 100 - b;
+            document.getElementById('wr-black').style.width = b + '%';
+            document.getElementById('wr-white').style.width = w + '%';
+            document.getElementById('wr-text').textContent = '胜率 黑 ' + b + '% / 白 ' + w + '%';
+        }
+        
         function makeHumanMove(x, y) {
             if (!moduleReady || gameState !== 'playing') return;
             if (isAIThinking) return;
@@ -550,6 +575,7 @@
                 moveHistory.push({ x, y, player, moveNum: moveHistory.length + 1 });
                 drawBoard();
                 updateStatus();
+                updateWinRate(Module._evaluateBoard());
                 if (gameState === 'playing') {
                     // 如果是人机模式，轮到 AI 走
                     if (Module._getCurrentPlayer() === 2) {
@@ -621,6 +647,7 @@
                 const nodes = Module._wasmGetLastSearchNodes();
                 const time = Module._wasmGetLastSearchTimeMs();
                 updateStats(depth, nodes, time);
+                updateWinRate(Module._wasmGetLastSearchScore());
                 
                 // 如果是机机对战，继续
                 if (gameMode === 'ai-vs-ai' && gameState === 'playing') {
@@ -656,6 +683,7 @@
             drawBoard();
             updateStatus();
             updateStats(0, 0, 0);
+            updateWinRate(0);
             
             // 如果是机机对战，自动开始
             if (gameMode === 'ai-vs-ai') {
