@@ -440,6 +440,10 @@ static constexpr int64_t DIAGONAL_SPLIT_THREE_BONUS = 30000000;
 static constexpr int64_t OPEN_THREE_ENDPOINT_BONUS = 5;
 // 争夺激烈程度：仅用于打破近似并列，不改变真实威胁的优先级
 static constexpr int64_t CONTESTED_WEIGHT = 100;
+// 开局贴邻加成：棋盘还很稀疏时（前几手），贴着已有棋子下（切比雪夫距离 <=1）。
+// 用户指定的行为：AI 的第一/第二个回应必须贴着下，不能隔一格跳开。
+// 只在前几手生效，量级可调；不改搜索内容，只参与同分/近分的取舍。
+static constexpr int64_t OPENING_ADJACENT_BONUS = 300000;
 
 // ===== 将杀距离 =====
 // 终局分不再固定为 +-WIN_THRESHOLD，而是把「距离」编进分值：
@@ -1265,6 +1269,20 @@ SearchResult findBestMove(Board& board) {
                     ++nearbyEnemy;
                 }
             }
+        }
+        // 开局贴邻：前几手内，候选若紧贴（八个邻格内）任一对手棋子，加分
+        if (board.moveCount() <= 3) {
+            bool adjacent = false;
+            for (int ddy = -1; ddy <= 1 && !adjacent; ++ddy) {
+                for (int ddx = -1; ddx <= 1 && !adjacent; ++ddx) {
+                    if (ddx == 0 && ddy == 0) continue;
+                    if (board.inBounds(candidate.pos.x + ddx, candidate.pos.y + ddy) &&
+                        board.get(candidate.pos.x + ddx, candidate.pos.y + ddy) == rootOpponent) {
+                        adjacent = true;
+                    }
+                }
+            }
+            if (adjacent) adjustment += OPENING_ADJACENT_BONUS;
         }
         adjustment += (int64_t)nearbyEnemy * CONTESTED_WEIGHT;
         board.makeMove(candidate.pos.x, candidate.pos.y);
