@@ -552,7 +552,7 @@
         
         // 胜率：引擎评分在 ±WIN_THRESHOLD(1000万) 之间，线性映射到 [0,1]
         function updateWinRate(score) {
-            var p = 0.5 + score / (2 * 10000000);
+            var p = 0.5 + Number(score) / (2 * 10000000);
             if (p < 0) p = 0;
             if (p > 1) p = 1;
             var b = Math.round(p * 100);
