@@ -19,6 +19,7 @@ void initGame() {
     g_board.reset();
     setDifficulty(g_currentDifficulty);
     resetStats();
+    clearSearchTables();   // 新开一局：清空置换表，上一局的残留不得影响本局
     printf("Game initialized\n");
 }
 
@@ -97,6 +98,7 @@ EMSCRIPTEN_KEEPALIVE
 void undo() {
     if (g_board.moveCount() > 0) {
         g_board.undo();
+        clearSearchTables();   // 悔棋：清空置换表，重下时与第一次保持一致的判断基准
         printf("Undo: move count now %d\n", g_board.moveCount());
     }
 }
@@ -107,6 +109,7 @@ void undoN(int n) {
     for (int i = 0; i < n && g_board.moveCount() > 0; i++) {
         g_board.undo();
     }
+    clearSearchTables();   // 悔棋：清空置换表，重下时与第一次保持一致的判断基准
     printf("Undo %d: move count now %d\n", n, g_board.moveCount());
 }
 

@@ -1568,6 +1568,14 @@ void resetStats() {
     g_timedOut = false;
 }
 
+// 清空搜索缓存（主置换表 + 威胁搜索置换表）。
+// 新开一局或悔棋后调用：避免上一局 / 被撤销分支的残留条目影响后续选择。
+// 实测不清空时，同一开局的应手会在并列着法间漂移（(6,6) -> (8,6)）。
+void clearSearchTables() {
+    memset(g_tt, 0, sizeof(g_tt));
+    threatTtClear();
+}
+
 int getMaxDepth() {
     return g_maxDepth;
 }

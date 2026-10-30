@@ -192,6 +192,8 @@ SearchResult findBestMove(Board& board);
 // ============= 调试 =============
 int64_t getNodesVisited();
 void resetStats();
+// 清空置换表（新局 / 悔棋时调用，保证同一局面在干净状态下可复现）
+void clearSearchTables();
 
 // 获取最后一次搜索的统计信息
 int getLastSearchDepth();
