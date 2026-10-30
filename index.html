@@ -371,7 +371,8 @@
         let aiVsAIPaused = false;
         let aiVsAISpeed = 500;     // ms per move
         let aiVsAITimer = null;
-        let moveHistory = [];  // 棋谱记录 [{x, y, player, moveNum}]
+        let moveHistory = [];  // 棋谱记录 [{x, y, player, moveNum, stats?}]（stats 为 AI 搜索统计）
+        let gameEvents = [];   // 对局内事件（悔棋等），记入棋谱以还原会话过程
         let difficultyLog = [];  // 本局难度生效区间 [{ply, label}]，供棋谱还原真实难度
         // 对局代次：newGame/undo 时递增，用于作废已调度但尚未执行的 AI 回调，
         // 防止旧棋盘快照与新棋盘做 diff 时产生幽灵棋谱记录
@@ -543,7 +544,7 @@
                 const turnClass = player === 1 ? 'black' : 'white';
                 let html = '<span class="turn-indicator ' + turnClass + '"></span>';
                 if (isAIThinking) {
-                    html += '<span class="thinking">AI 思考中...</span>';
+                    html += '<span class="thinking">AI 思考中...（预计' + estimateThinkText() + '）</span>';
                 } else {
                     html += turnText + '回合';
                 }
@@ -628,6 +629,12 @@
                 const result = Module._aiMove();
                 isAIThinking = false;
                 
+                // 获取搜索统计（一并写入棋谱，供以后复盘：深度/节点/用时/评分）
+                const depth = Module._wasmGetLastSearchDepth();
+                const nodes = Module._wasmGetLastSearchNodes();
+                const time = Module._wasmGetLastSearchTimeMs();
+                const score = String(Module._wasmGetLastSearchScore());
+                
                 // 找到 AI 最后落子的位置（对比前后棋盘）
                 // 正常情况恰好差一个子；否则跳过记谱（宁可缺记，不可记错）
                 if (result !== -1) {
@@ -640,7 +647,8 @@
                         }
                     }
                     if (diffs.length === 1) {
-                        moveHistory.push({ x: diffs[0].x, y: diffs[0].y, player, moveNum: moveHistory.length + 1 });
+                        moveHistory.push({ x: diffs[0].x, y: diffs[0].y, player, moveNum: moveHistory.length + 1,
+                                           stats: { depth, nodes, time, score } });
                     } else {
                         console.warn('AI move diff abnormal, skip record:', diffs.length);
                     }
@@ -648,13 +656,8 @@
                 
                 drawBoard();
                 updateStatus();
-                
-                // 获取搜索统计
-                const depth = Module._wasmGetLastSearchDepth();
-                const nodes = Module._wasmGetLastSearchNodes();
-                const time = Module._wasmGetLastSearchTimeMs();
                 updateStats(depth, nodes, time);
-                updateWinRate(Module._wasmGetLastSearchScore());
+                updateWinRate(score);
                 
                 // 如果是机机对战，继续
                 if (gameMode === 'ai-vs-ai' && gameState === 'playing') {
@@ -666,6 +669,14 @@
         function difficultyLabel() {
             const sel = document.getElementById('difficulty-select');
             return sel.options[sel.selectedIndex].text;
+        }
+        
+        // 对局中提示：本难度下 AI 单步思考的大致耗时（困难档关键局面触发复核会更久）
+        function estimateThinkText() {
+            const v = parseInt(document.getElementById('difficulty-select').value);
+            if (v === 0) return '约 1 秒';
+            if (v === 1) return '约 3 秒';
+            return '约 30 秒，关键局面更久';
         }
         
         function newGame() {
@@ -680,6 +691,7 @@
             isAIThinking = false;
             aiVsAIPaused = false;
             moveHistory = [];  // 清空棋谱
+            gameEvents = [];   // 清空会话事件
             difficultyLog = [{ ply: 1, label: difficultyLabel() }];
             
             if (aiVsAITimer) {
@@ -719,6 +731,7 @@
                     moveHistory.pop();
                 }
             }
+            gameEvents.push({ ply: moveHistory.length + 1, desc: '悔棋 ' + (player === 1 ? 2 : 1) + ' 步' });
             
             gameState = 'playing';
             drawBoard();
@@ -798,18 +811,33 @@
             let record = '五子棋对局记录\n';
             record += '================\n';
             record += `日期: ${new Date().toLocaleString()}\n`;
+            record += `构建: ${window.__GOMOKU_BUILD__ || 'unknown'}\n`;
             record += `难度: ${difficultyLog.length ? difficultyLog[0].label : difficultyLabel()}\n`;
             for (let i = 1; i < difficultyLog.length; i++) {
                 record += `难度变更: 第${difficultyLog[i].ply}手起 → ${difficultyLog[i].label}\n`;
             }
             record += `总步数: ${moveHistory.length}\n`;
+            const statusCode = Module._getGameStatus();
+            record += `结果: ${statusCode === 1 ? '黑棋胜' : statusCode === 2 ? '白棋胜' : statusCode === 3 ? '平局' : '未结束'}\n`;
             record += '================\n\n';
             
             for (let i = 0; i < moveHistory.length; i++) {
                 const m = moveHistory[i];
+                // 会话事件（悔棋等）标在下一手之前，便于还原真实对局过程
+                for (const ev of gameEvents) {
+                    if (ev.ply === m.moveNum) record += `—— 本手前：${ev.desc} ——\n`;
+                }
                 const playerStr = m.player === 1 ? '黑' : '白';
                 const coord = coords[m.x] + (m.y + 1);
-                record += `${m.moveNum}. ${playerStr}棋 ${coord} (x:${m.x}, y:${m.y})\n`;
+                let line = `${m.moveNum}. ${playerStr}棋 ${coord} (x:${m.x}, y:${m.y})`;
+                if (m.stats) {
+                    line += `  [深度${m.stats.depth} 节点${m.stats.nodes} 用时${(m.stats.time / 1000).toFixed(1)}s 评分${m.stats.score}]`;
+                }
+                record += line + '\n';
+            }
+            // 末尾事件（悔棋后未再落子等）
+            for (const ev of gameEvents) {
+                if (ev.ply > moveHistory.length) record += `—— 其后：${ev.desc} ——\n`;
             }
             
             // 复制到剪贴板
