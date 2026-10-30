@@ -343,7 +343,7 @@
     
     <script>
         // 构建号：发布须知——改这里时，必须把下方引擎脚本引用的 ?v= 参数一起改，两者保持一致。
-        window.__GOMOKU_BUILD__ = '20261030-session-fix';
+        window.__GOMOKU_BUILD__ = '20261030b';
         window.Module = window.Module || {};
 
         // 引擎就绪桥接。引擎异步实例化 WASM，缓存命中时它可能在本页面后续脚本
@@ -630,9 +630,10 @@
                 isAIThinking = false;
                 
                 // 获取搜索统计（一并写入棋谱，供以后复盘：深度/节点/用时/评分）
-                const depth = Module._wasmGetLastSearchDepth();
-                const nodes = Module._wasmGetLastSearchNodes();
-                const time = Module._wasmGetLastSearchTimeMs();
+                // 注意：Emscripten 的 long long 返回值是 BigInt，必须转 Number 后才能参与运算
+                const depth = Number(Module._wasmGetLastSearchDepth());
+                const nodes = Number(Module._wasmGetLastSearchNodes());
+                const time = Number(Module._wasmGetLastSearchTimeMs());
                 const score = String(Module._wasmGetLastSearchScore());
                 
                 // 找到 AI 最后落子的位置（对比前后棋盘）
@@ -831,7 +832,7 @@
                 const coord = coords[m.x] + (m.y + 1);
                 let line = `${m.moveNum}. ${playerStr}棋 ${coord} (x:${m.x}, y:${m.y})`;
                 if (m.stats) {
-                    line += `  [深度${m.stats.depth} 节点${m.stats.nodes} 用时${(m.stats.time / 1000).toFixed(1)}s 评分${m.stats.score}]`;
+                    line += `  [深度${m.stats.depth} 节点${m.stats.nodes} 用时${(Number(m.stats.time) / 1000).toFixed(1)}s 评分${m.stats.score}]`;
                 }
                 record += line + '\n';
             }
