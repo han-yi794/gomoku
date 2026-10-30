@@ -336,11 +336,14 @@
                 <div>搜索深度: <span id="search-depth">-</span></div>
                 <div>节点数: <span id="node-count">-</span></div>
                 <div>思考时间: <span id="think-time">-</span>ms</div>
+                <div>构建: <span id="build-id">-</span></div>
             </div>
         </div>
     </div>
     
     <script>
+        // 构建号：发布须知——改这里时，必须把下方引擎脚本引用的 ?v= 参数一起改，两者保持一致。
+        window.__GOMOKU_BUILD__ = '20261030-session-fix';
         window.Module = window.Module || {};
 
         // 引擎就绪桥接。引擎异步实例化 WASM，缓存命中时它可能在本页面后续脚本
@@ -353,6 +356,10 @@
             window.__engineReady = true;
             if (window.__engineReadyHook) window.__engineReadyHook();
         };
+
+        // 在统计面板里显示构建号，方便核对当前运行的是哪个版本。
+        var _buildEl = document.getElementById('build-id');
+        if (_buildEl) _buildEl.textContent = window.__GOMOKU_BUILD__;
     </script>
     <script src="gomoku.js"></script>
     <script>
