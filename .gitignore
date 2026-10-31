@@ -14,4 +14,6 @@ dist/
 .vscode/
 .idea/
 Thumbs.db
-desktop.ini
+desktop.ini_b1030/
+_forensic/
+_b1030/**
