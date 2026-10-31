@@ -586,6 +586,8 @@ static constexpr int64_t WIN_SCORE_FLOOR = WIN_THRESHOLD - 1 - MATE_MAX_PLY * MA
 static constexpr int64_t LOSS_SCORE_CEIL = -WIN_SCORE_FLOOR;
 static constexpr int64_t TERMINAL_TIE = 3;   // 终局分只允许这么点的 tie-break
 static constexpr int POST_SCAN_MIN_BUDGET = 4000;     // 复核要求的最低时间预算（低难度复核太浅，直接跳过）
+// 根节点战术加成限幅：不得把分数线推离搜索语义（未限幅时实测可达 ±4800 万，盖过搜索结论）
+static constexpr int64_t MAX_TACTICAL_ADJUST = 10000000;
 static constexpr size_t POST_SCAN_MAX_FINALISTS = 5;  // 决赛候选数超过这个就不复核
 static bool g_inPostScan = false;                      // 防止复核里再触发复核
 
@@ -1541,7 +1543,7 @@ SearchResult findBestMove(Board& board) {
             int64_t rawScore = score;
             if (move.tactical_adjustment != 0) {
                 if (rawScore > LOSS_SCORE_CEIL && rawScore < WIN_SCORE_FLOOR) {
-                    score += move.tactical_adjustment;
+                    score += (move.tactical_adjustment > MAX_TACTICAL_ADJUST) ? MAX_TACTICAL_ADJUST : ((move.tactical_adjustment < -MAX_TACTICAL_ADJUST) ? -MAX_TACTICAL_ADJUST : move.tactical_adjustment);
                 } else {
                     int64_t tieBreak = std::max<int64_t>(-TERMINAL_TIE, std::min<int64_t>(TERMINAL_TIE, move.tactical_adjustment));
                     score += tieBreak;
@@ -1700,8 +1702,8 @@ void setDifficulty(Difficulty level) {
             break;
         case Difficulty::HARD:
             g_maxDepth = 16;
-            g_timeBudgetMs = 5000;    // 增量评估提速约 8~10 倍后：5s 即复现旧版 30s 的全部走法结论
-                                      //（电池局面逐一比对一致，见 README「增量棋型评估」），等待缩短 6 倍
+            g_timeBudgetMs = 10000;   // 2026-10-31 对局复核校准：10s 修复开局质量问题（实测白4 正确走 (9,5)），
+                                      // 约为旧 30s 的 3 倍速（增量评估提速 ≈8~10 倍）
             break;
     }
 }
