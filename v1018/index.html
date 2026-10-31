@@ -1,0 +1,939 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>五子棋 AI - Gomoku AI</title>
+    <!-- 内联 SVG 图标：避免请求 favicon.ico 产生 404 -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23DEB887'/%3E%3Ccircle cx='11' cy='16' r='5' fill='%23111'/%3E%3Ccircle cx='21' cy='16' r='5' fill='%23fff' stroke='%23111'/%3E%3C/svg%3E">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: #eee;
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+        
+        .container {
+            display: flex;
+            gap: 30px;
+            padding: 20px;
+            flex-wrap: wrap;
+            justify-content: center;
+            /* auto 外边距替代 align-items:center：内容比视口高时不会把顶部裁掉 */
+            margin: auto;
+            width: 100%;
+        }
+        
+        .game-area {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            max-width: 100%;
+        }
+        
+        canvas {
+            border: 3px solid #ffd700;
+            border-radius: 8px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            cursor: pointer;
+            display: block;
+            max-width: 100%;
+            /* 棋盘上不触发双击缩放/滚动，点按手感等同原生 app */
+            touch-action: none;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        
+        .controls {
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
+            padding: 25px;
+            width: 280px;
+            backdrop-filter: blur(10px);
+        }
+        
+        .title {
+            font-size: 24px;
+            font-weight: bold;
+            text-align: center;
+            margin-bottom: 20px;
+            color: #ffd700;
+            text-shadow: 0 0 10px rgba(255,215,0,0.5);
+        }
+        
+        .control-group {
+            margin-bottom: 15px;
+        }
+        
+        .control-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 14px;
+            color: #aaa;
+        }
+        
+        .control-group select,
+        .control-group input[type="range"] {
+            width: 100%;
+            padding: 8px;
+            border: none;
+            border-radius: 6px;
+            background: rgba(255,255,255,0.1);
+            color: #fff;
+            font-size: 14px;
+        }
+        
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        
+        button {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: 6px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102,126,234,0.4);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        button.secondary {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        }
+        
+        button.warning {
+            background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);
+            color: #333;
+        }
+        
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 8px;
+            text-align: center;
+            font-size: 16px;
+        }
+        
+        .status .turn-indicator {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            margin-right: 8px;
+            vertical-align: middle;
+            border: 2px solid #fff;
+        }
+        
+        .status .turn-indicator.black {
+            background: #333;
+        }
+        
+        .status .turn-indicator.white {
+            background: #fff;
+        }
+        
+        .stats {
+            margin-top: 15px;
+            padding: 15px;
+            background: rgba(255,255,255,0.03);
+            border-radius: 8px;
+            font-size: 12px;
+            color: #888;
+        }
+        
+        .stats div {
+            margin: 5px 0;
+        }
+        
+        .winner-msg {
+            color: #ffd700;
+            font-weight: bold;
+            animation: pulse 1s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .thinking {
+            color: #667eea;
+            animation: blink 0.8s infinite;
+        }
+        
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+        
+        .mode-info {
+            margin-top: 15px;
+            padding: 10px;
+            background: rgba(102,126,234,0.1);
+            border-radius: 6px;
+            font-size: 12px;
+            color: #aaa;
+            text-align: center;
+        }
+        
+        .win-rate { margin-top: 10px; text-align: center; font-size: 14px; color: #333; }
+        .bar-wrap { width: 260px; height: 7px; border: 1px solid #8B4513; margin: 4px auto 0 auto; background: #fff; overflow: hidden; box-sizing: border-box; }
+        .seg { height: 100%; float: left; box-sizing: border-box; }
+        .seg.black { background: #111; }
+        .seg.white { background: #fff; border-left: 1px solid #8B4513; }
+        .version-row { margin-top: 8px; text-align: center; font-size: 13px; color: #666; }
+        .version-row a { color: #2b6cb0; text-decoration: none; }
+        .version-row a:hover { text-decoration: underline; }
+        
+        /* ============= 响应式 ============= */
+        @media (max-width: 800px) {
+            .container {
+                flex-direction: column;
+                align-items: center;
+                gap: 10px;
+                padding: 10px;
+                padding-left: max(10px, env(safe-area-inset-left));
+                padding-right: max(10px, env(safe-area-inset-right));
+            }
+            .controls {
+                width: 100%;
+                max-width: 420px;
+                padding: 14px;
+            }
+            .mode-info { margin-top: 8px; padding: 6px; }
+            .title {
+                font-size: 20px;
+                margin-bottom: 12px;
+            }
+            button {
+                min-height: 44px;   /* 触控目标下限 */
+                font-size: 15px;
+                padding: 12px 8px;
+            }
+            .btn-group { gap: 8px; }
+            .control-group { margin-bottom: 10px; }
+            .control-group select,
+            .control-group input[type="range"] { padding: 10px 8px; font-size: 16px; }
+            .status { margin-top: 14px; padding: 12px; }
+            /* 统计区改两列，省下的高度让按钮尽量留在首屏 */
+            .stats {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 4px 12px;
+                margin-top: 10px;
+                padding: 10px;
+            }
+            .stats div { margin: 0; }
+        }
+
+        /* 手机横屏（矮视口）：棋盘与控制区并排，避免整页上下滚动 */
+        @media (orientation: landscape) and (max-height: 560px) {
+            .container {
+                flex-direction: row;
+                align-items: center;
+                gap: 12px;
+                padding: 8px;
+            }
+            .controls {
+                max-width: 320px;
+                padding: 14px;
+                max-height: calc(100vh - 16px);
+                overflow-y: auto;   /* 兜底：面板再长也不撑高整页 */
+            }
+            .title { font-size: 18px; margin-bottom: 8px; }
+            .mode-info { margin-top: 8px; padding: 6px; }
+            .control-group { margin-bottom: 8px; }
+            /* 搜索深度/节点数属于调试信息，矮视口优先保证棋盘与操作可用 */
+            .stats { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="game-area">
+            <canvas id="board" width="600" height="600"></canvas>
+            <div class="mode-info">
+                <span id="mode-text">人机对战模式</span>
+            </div>
+        </div>
+        <div class="win-rate" id="win-rate">
+            <div class="bar-wrap">
+                <span class="seg black" id="wr-black" style="width:50%"></span>
+                <span class="seg white" id="wr-white" style="width:50%"></span>
+            </div>
+            <div class="wr-text" id="wr-text">平局 50% / 50%</div>
+        </div>
+        
+        <div class="controls">
+            <h1 class="title">五子棋 AI</h1>
+            
+            <div class="control-group">
+                <label>游戏模式</label>
+                <select id="mode-select">
+                    <option value="human">人机对战</option>
+                    <option value="ai-vs-ai">机机对战</option>
+                </select>
+            </div>
+            
+            <div class="control-group">
+                <label>AI 难度</label>
+                <select id="difficulty-select">
+                    <option value="0">简单 (Depth 4)</option>
+                    <option value="1" selected>中等 (Depth 8)</option>
+                    <option value="2">困难 (Depth 16)</option>
+                </select>
+            </div>
+            
+            <div class="control-group" id="speed-group" style="display:none;">
+                <label>对局速度: <span id="speed-value">500</span>ms</label>
+                <input type="range" id="speed-slider" min="100" max="2000" value="500" step="100">
+            </div>
+            
+            <div class="btn-group">
+                <button id="new-game-btn">新游戏</button>
+                <button id="undo-btn" class="secondary">悔棋</button>
+                <button id="copy-record-btn" class="secondary">复制棋谱</button>
+            </div>
+            
+            <div class="btn-group" style="margin-top:10px;">
+                <button id="pause-btn" class="warning" style="display:none;">暂停</button>
+                <button id="speed-up-btn" class="warning" style="display:none;">加速</button>
+            </div>
+            
+            <div class="status" id="status">
+                <span class="turn-indicator black"></span>
+                黑棋先手
+            </div>
+            
+            <div class="stats" id="stats">
+                <div>步数: <span id="move-count">0</span></div>
+                <div>搜索深度: <span id="search-depth">-</span></div>
+                <div>节点数: <span id="node-count">-</span></div>
+                <div>思考时间: <span id="think-time">-</span>ms</div>
+                <div>构建: <span id="build-id">-</span></div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="version-row" id="version-row"></div>
+    
+    <script>
+        // 构建号：发布须知——改这里时，必须把下方引擎脚本引用的 ?v= 参数一起改，两者保持一致。
+        window.__GOMOKU_BUILD__ = '20261031c（引擎 10.18）';
+        window.Module = window.Module || {};
+
+        // 引擎就绪桥接。引擎异步实例化 WASM，缓存命中时它可能在本页面后续脚本
+        // 挂上 onRuntimeInitialized 之前就跑完 run()，那时回调尚未赋值、之后
+        // 永不触发（表现为棋盘能读引擎但整页无法落子）。所以在引擎脚本之前
+        // 先接管这个回调，并记录就绪时刻，两种先后顺序都能收敛到同一个入口。
+        window.__engineReady = false;
+        window.__engineReadyHook = null;
+        window.Module.onRuntimeInitialized = function() {
+            window.__engineReady = true;
+            if (window.__engineReadyHook) window.__engineReadyHook();
+        };
+
+        // 在统计面板里显示构建号，方便核对当前运行的是哪个版本。
+        var _buildEl = document.getElementById('build-id');
+        if (_buildEl) _buildEl.textContent = window.__GOMOKU_BUILD__;
+
+        // 版本选择行：可在「最新 / 10.30 / 10.18」三个引擎之间切换试玩。
+        // 子目录（/v1018/、/v1030/）里用 ../ 相对路径返回根目录。
+        (function() {
+            var row = document.getElementById('version-row');
+            if (!row) return;
+            var m = location.pathname.match(/\/(v\d{4})\/?$/);
+            var cur = m ? m[1] : '';
+            var base = cur ? '../' : './';
+            var items = [['', '最新版'], ['v1030', '10.30 版'], ['v1018', '10.18 版']];
+            var html = '对手版本：';
+            for (var i = 0; i < items.length; i++) {
+                var v = items[i][0];
+                if (i) html += ' · ';
+                if (v === cur) {
+                    html += '<b>【' + items[i][1] + '】</b>';
+                } else {
+                    html += '<a href="' + base + (v ? v + '/' : '') + '">' + items[i][1] + '</a>';
+                }
+            }
+            row.innerHTML = html;
+        })();
+    </script>
+    <script src="gomoku.js"></script>
+    <script>
+        // ============= 全局状态 =============
+        let moduleReady = false;
+        let gameState = 'playing';  // playing, black-wins, white-wins, draw
+        let gameMode = 'human';    // human, ai-vs-ai
+        let isAIThinking = false;
+        let aiVsAIPaused = false;
+        let aiVsAISpeed = 500;     // ms per move
+        let aiVsAITimer = null;
+        let moveHistory = [];  // 棋谱记录 [{x, y, player, moveNum, stats?}]（stats 为 AI 搜索统计）
+        let gameEvents = [];   // 对局内事件（悔棋等），记入棋谱以还原会话过程
+        let difficultyLog = [];  // 本局难度生效区间 [{ply, label}]，供棋谱还原真实难度
+        // 对局代次：newGame/undo 时递增，用于作废已调度但尚未执行的 AI 回调，
+        // 防止旧棋盘快照与新棋盘做 diff 时产生幽灵棋谱记录
+        let gameGen = 0;
+        
+        // 棋盘渲染参数
+        const canvas = document.getElementById('board');
+        const ctx = canvas.getContext('2d');
+        const BOARD_SIZE = 15;
+        const CELL_SIZE = 40;
+        const PADDING = 20;
+        const CANVAS_SIZE = CELL_SIZE * (BOARD_SIZE - 1) + PADDING * 2;
+        // 逻辑坐标 → 画布像素的缩放系数。绘制代码统一使用 600x600 逻辑坐标，
+        // 由 ctx.setTransform 映射到实际像素，手机上高分屏也不会糊。
+        let boardScale = 1;
+        let resizePending = false;
+
+        // 按视口算出棋盘的 CSS 显示边长：竖屏按宽度收敛，手机横屏（矮视口）
+        // 按高度收敛，保证棋盘始终完整可见、不需要滚动。
+        function computeBoardDisplaySize() {
+            const gutter = 34;   // 容器 padding + 棋盘边框
+            let available = window.innerWidth - gutter;
+            const isShortLandscape = window.innerWidth > window.innerHeight &&
+                                    window.innerHeight < 560;
+            if (isShortLandscape) {
+                available = Math.min(available, window.innerHeight - 80);
+            }
+            return Math.max(240, Math.min(CANVAS_SIZE, Math.floor(available)));
+        }
+
+        function resizeBoard() {
+            const display = computeBoardDisplaySize();
+            canvas.style.width = display + 'px';
+            canvas.style.height = display + 'px';
+            // 背板分辨率按显示尺寸 × 设备像素比，避免高分屏放大模糊
+            const backing = Math.round(display * Math.min(window.devicePixelRatio || 1, 3));
+            if (canvas.width !== backing) {
+                canvas.width = backing;
+                canvas.height = backing;
+            }
+            boardScale = canvas.width / CANVAS_SIZE;
+            drawBoard();
+        }
+
+        function requestResize() {
+            if (resizePending) return;
+            resizePending = true;
+            requestAnimationFrame(() => {
+                resizePending = false;
+                resizeBoard();
+            });
+        }
+
+        // ============= 渲染函数 =============
+        function drawBoard() {
+            ctx.setTransform(boardScale, 0, 0, boardScale, 0, 0);
+            ctx.fillStyle = '#DEB887';
+            ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+            
+            // 画网格线
+            ctx.strokeStyle = '#8B4513';
+            ctx.lineWidth = 1;
+            for (let i = 0; i < BOARD_SIZE; i++) {
+                ctx.beginPath();
+                ctx.moveTo(PADDING + i * CELL_SIZE, PADDING);
+                ctx.lineTo(PADDING + i * CELL_SIZE, PADDING + (BOARD_SIZE - 1) * CELL_SIZE);
+                ctx.stroke();
+                
+                ctx.beginPath();
+                ctx.moveTo(PADDING, PADDING + i * CELL_SIZE);
+                ctx.lineTo(PADDING + (BOARD_SIZE - 1) * CELL_SIZE, PADDING + i * CELL_SIZE);
+                ctx.stroke();
+            }
+            
+            // 画星位
+            const stars = [[3,3], [3,11], [11,3], [11,11], [7,7]];
+            ctx.fillStyle = '#8B4513';
+            stars.forEach(([x, y]) => {
+                ctx.beginPath();
+                ctx.arc(PADDING + x * CELL_SIZE, PADDING + y * CELL_SIZE, 4, 0, Math.PI * 2);
+                ctx.fill();
+            });
+            
+            // 画棋子
+            if (moduleReady) {
+                for (let y = 0; y < BOARD_SIZE; y++) {
+                    for (let x = 0; x < BOARD_SIZE; x++) {
+                        const cell = Module._getCell(x, y);
+                        if (cell !== 0) {
+                            drawStone(x, y, cell);
+                        }
+                    }
+                }
+            }
+            
+            // 高亮上一步落子（棋子中央画红色圆环，黑白子都清晰可见）
+            if (moveHistory.length > 0) {
+                const last = moveHistory[moveHistory.length - 1];
+                const lx = PADDING + last.x * CELL_SIZE;
+                const ly = PADDING + last.y * CELL_SIZE;
+                ctx.beginPath();
+                ctx.arc(lx, ly, 6, 0, Math.PI * 2);
+                ctx.strokeStyle = '#e53935';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+            }
+        }
+        
+        function drawStone(x, y, player) {
+            const cx = PADDING + x * CELL_SIZE;
+            const cy = PADDING + y * CELL_SIZE;
+            const radius = CELL_SIZE * 0.4;
+            
+            // 阴影
+            ctx.beginPath();
+            ctx.arc(cx + 2, cy + 2, radius, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(0,0,0,0.3)';
+            ctx.fill();
+            
+            // 棋子
+            const gradient = ctx.createRadialGradient(cx - 5, cy - 5, 0, cx, cy, radius);
+            if (player === 1) {  // Black
+                gradient.addColorStop(0, '#555');
+                gradient.addColorStop(1, '#111');
+            } else {  // White
+                gradient.addColorStop(0, '#fff');
+                gradient.addColorStop(1, '#ccc');
+            }
+            
+            ctx.beginPath();
+            ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+            ctx.fillStyle = gradient;
+            ctx.fill();
+            ctx.strokeStyle = player === 1 ? '#000' : '#999';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+        }
+        
+        // ============= 游戏逻辑 =============
+        function updateStatus() {
+            if (!moduleReady) return;
+            
+            const status = Module._getGameStatus();
+            const moveCount = Module._getMoveCount();
+            const player = Module._getCurrentPlayer();
+            
+            document.getElementById('move-count').textContent = moveCount;
+            
+            if (status === 1) {
+                gameState = 'black-wins';
+                document.getElementById('status').innerHTML = 
+                    '<span class="winner-msg">🎉 黑棋获胜！</span>';
+                document.getElementById('undo-btn').disabled = false;
+                document.getElementById('new-game-btn').focus();
+            } else if (status === 2) {
+                gameState = 'white-wins';
+                document.getElementById('status').innerHTML = 
+                    '<span class="winner-msg">🎉 白棋获胜！</span>';
+                document.getElementById('undo-btn').disabled = false;
+                document.getElementById('new-game-btn').focus();
+            } else if (status === 3) {
+                gameState = 'draw';
+                document.getElementById('status').innerHTML = 
+                    '<span class="winner-msg">平局！</span>';
+                document.getElementById('undo-btn').disabled = false;
+            } else {
+                gameState = 'playing';
+                const turnText = player === 1 ? '黑棋' : '白棋';
+                const turnClass = player === 1 ? 'black' : 'white';
+                let html = '<span class="turn-indicator ' + turnClass + '"></span>';
+                if (isAIThinking) {
+                    html += '<span class="thinking">AI 思考中...（预计' + estimateThinkText() + '）</span>';
+                } else {
+                    html += turnText + '回合';
+                }
+                document.getElementById('status').innerHTML = html;
+            }
+        }
+        
+        function updateStats(depth, nodes, time) {
+            document.getElementById('search-depth').textContent = depth || '-';
+            document.getElementById('node-count').textContent = nodes || '-';
+            document.getElementById('think-time').textContent = time || '-';
+        }
+        
+        // 胜率：引擎评分在 ±WIN_THRESHOLD(1000万) 之间，线性映射到 [0,1]
+        function updateWinRate(score) {
+            var p = 0.5 + Number(score) / (2 * 10000000);
+            if (p < 0) p = 0;
+            if (p > 1) p = 1;
+            var b = Math.round(p * 100);
+            var w = 100 - b;
+            document.getElementById('wr-black').style.width = b + '%';
+            document.getElementById('wr-white').style.width = w + '%';
+            document.getElementById('wr-text').textContent = '胜率 黑 ' + b + '% / 白 ' + w + '%';
+        }
+        
+        function makeHumanMove(x, y) {
+            if (!moduleReady || gameState !== 'playing') return;
+            if (isAIThinking) return;
+            if (gameMode === 'ai-vs-ai') return;
+            // 人类只允许在轮到黑棋时落子（防止连点把白棋也下了）
+            if (Module._getCurrentPlayer() !== 1) return;
+            
+            const result = Module._playerMove(x, y);
+            if (result !== -1) {
+                const player = Module._getCurrentPlayer() === 1 ? 2 : 1;  // 落子前的玩家
+                moveHistory.push({ x, y, player, moveNum: moveHistory.length + 1 });
+                drawBoard();
+                updateStatus();
+                updateWinRate(Module._evaluateBoard());
+                if (gameState === 'playing') {
+                    // 如果是人机模式，轮到 AI 走
+                    if (Module._getCurrentPlayer() === 2) {
+                        const gen = gameGen;
+                        setTimeout(() => aiMove(gen), 50);
+                    }
+                }
+            }
+        }
+        
+        function aiMove(expectedGen) {
+            if (!moduleReady || gameState !== 'playing') return;
+            if (aiVsAIPaused) return;
+            if (isAIThinking) return;  // 防止重复调度导致 AI 连走两步
+            // 过期的调度（其间发生过 newGame/undo）直接丢弃
+            if (expectedGen !== undefined && expectedGen !== gameGen) return;
+            // 人机模式下 AI 只允许在轮到白棋时走
+            if (gameMode === 'human' && Module._getCurrentPlayer() !== 2) return;
+            
+            isAIThinking = true;
+            updateStatus();
+            
+            // 记录 AI 落子前的棋盘状态
+            const boardBefore = [];
+            for (let y = 0; y < BOARD_SIZE; y++) {
+                const row = [];
+                for (let x = 0; x < BOARD_SIZE; x++) {
+                    row.push(Module._getCell(x, y));
+                }
+                boardBefore.push(row);
+            }
+            
+            // 使用 setTimeout 让 UI 更新
+            const innerGen = gameGen;
+            setTimeout(() => {
+                // 快照已过期（其间发生过 newGame/undo）：放弃本手并复位思考标志
+                if (innerGen !== gameGen) {
+                    isAIThinking = false;
+                    updateStatus();
+                    return;
+                }
+                const player = Module._getCurrentPlayer();  // AI 落子前的玩家
+                const result = Module._aiMove();
+                isAIThinking = false;
+                
+                // 获取搜索统计（一并写入棋谱，供以后复盘：深度/节点/用时/评分）
+                // 注意：Emscripten 的 long long 返回值是 BigInt，必须转 Number 后才能参与运算
+                const depth = Number(Module._wasmGetLastSearchDepth());
+                const nodes = Number(Module._wasmGetLastSearchNodes());
+                const time = Number(Module._wasmGetLastSearchTimeMs());
+                const score = String(Module._wasmGetLastSearchScore());
+                
+                // 找到 AI 最后落子的位置（对比前后棋盘）
+                // 正常情况恰好差一个子；否则跳过记谱（宁可缺记，不可记错）
+                if (result !== -1) {
+                    const diffs = [];
+                    for (let y = 0; y < BOARD_SIZE; y++) {
+                        for (let x = 0; x < BOARD_SIZE; x++) {
+                            if (Module._getCell(x, y) !== boardBefore[y][x]) {
+                                diffs.push({ x, y });
+                            }
+                        }
+                    }
+                    if (diffs.length === 1) {
+                        moveHistory.push({ x: diffs[0].x, y: diffs[0].y, player, moveNum: moveHistory.length + 1,
+                                           stats: { depth, nodes, time, score } });
+                    } else {
+                        console.warn('AI move diff abnormal, skip record:', diffs.length);
+                    }
+                }
+                
+                drawBoard();
+                updateStatus();
+                updateStats(depth, nodes, time);
+                updateWinRate(score);
+                
+                // 如果是机机对战，继续
+                if (gameMode === 'ai-vs-ai' && gameState === 'playing') {
+                    aiVsAITimer = setTimeout(aiMove, aiVsAISpeed);
+                }
+            }, 50);
+        }
+        
+        function difficultyLabel() {
+            const sel = document.getElementById('difficulty-select');
+            return sel.options[sel.selectedIndex].text;
+        }
+        
+        // 对局中提示：本难度下 AI 单步思考的大致耗时（困难档关键局面触发复核会更久）
+        function estimateThinkText() {
+            const v = parseInt(document.getElementById('difficulty-select').value);
+            if (v === 0) return '约 1 秒';
+            if (v === 1) return '约 3 秒';
+            return '约 30 秒，关键局面更久';
+        }
+        
+        function newGame() {
+            if (!moduleReady) return;
+            
+            gameGen++;  // 作废所有待执行的 AI 回调
+            Module._initGame();
+            const difficulty = parseInt(document.getElementById('difficulty-select').value);
+            Module._setDifficultyLevel(difficulty);
+            
+            gameState = 'playing';
+            isAIThinking = false;
+            aiVsAIPaused = false;
+            moveHistory = [];  // 清空棋谱
+            gameEvents = [];   // 清空会话事件
+            difficultyLog = [{ ply: 1, label: difficultyLabel() }];
+            
+            if (aiVsAITimer) {
+                clearTimeout(aiVsAITimer);
+                aiVsAITimer = null;
+            }
+            
+            drawBoard();
+            updateStatus();
+            updateStats(0, 0, 0);
+            updateWinRate(0);
+            
+            // 如果是机机对战，自动开始
+            if (gameMode === 'ai-vs-ai') {
+                setTimeout(aiMove, 500);
+            }
+        }
+        
+        function undo() {
+            if (!moduleReady) return;
+            if (gameMode === 'ai-vs-ai') return;  // 机机对战不允许悔棋
+            
+            gameGen++;  // 作废所有待执行的 AI 回调（先作废，再改棋盘）
+            // 悔棋两步（玩家一步 + AI 一步）
+            const player = Module._getCurrentPlayer();
+            if (player === 1) {
+                // 轮到黑棋，说明 AI 刚走完，悔棋两步
+                Module._undoN(2);
+                if (moveHistory.length >= 2) {
+                    moveHistory.pop();
+                    moveHistory.pop();
+                }
+            } else {
+                // 轮到白棋（AI），悔棋一步
+                Module._undo();
+                if (moveHistory.length >= 1) {
+                    moveHistory.pop();
+                }
+            }
+            gameEvents.push({ ply: moveHistory.length + 1, desc: '悔棋 ' + (player === 1 ? 2 : 1) + ' 步' });
+            
+            gameState = 'playing';
+            drawBoard();
+            updateStatus();
+        }
+        
+        // ============= 事件监听 =============
+        canvas.addEventListener('click', function(e) {
+            const rect = canvas.getBoundingClientRect();
+            if (!rect.width || !rect.height) return;
+            // 棋盘按视口缩放显示，先把屏幕坐标换算回 600x600 逻辑坐标再定位格点
+            const logicX = (e.clientX - rect.left) * (CANVAS_SIZE / rect.width);
+            const logicY = (e.clientY - rect.top) * (CANVAS_SIZE / rect.height);
+            const x = Math.round((logicX - PADDING) / CELL_SIZE);
+            const y = Math.round((logicY - PADDING) / CELL_SIZE);
+
+            if (x >= 0 && x < BOARD_SIZE && y >= 0 && y < BOARD_SIZE) {
+                makeHumanMove(x, y);
+            }
+        });
+
+        window.addEventListener('resize', requestResize);
+        window.addEventListener('orientationchange', () => setTimeout(requestResize, 150));
+        
+        // 难度立即生效：此前只有「新游戏」才读取下拉框，对局中途切换难度
+        // 会静默失效——棋谱抬头却按显示值记录，导致记录与实际难度不符。
+        // 因此同时记录难度变更点，让棋谱能还原每一手实际使用的难度。
+        document.getElementById('difficulty-select').addEventListener('change', function() {
+            if (!moduleReady) return;
+            Module._setDifficultyLevel(parseInt(this.value));
+            const label = this.options[this.selectedIndex].text;
+            if (moveHistory.length === 0) {
+                difficultyLog = [{ ply: 1, label: label }];  // 尚未落子，整局按新难度
+            } else {
+                difficultyLog.push({ ply: moveHistory.length + 1, label: label });
+            }
+        });
+        
+        document.getElementById('mode-select').addEventListener('change', function() {
+            gameMode = this.value;
+            document.getElementById('mode-text').textContent = 
+                gameMode === 'human' ? '人机对战模式' : '机机对战模式';
+            
+            const speedGroup = document.getElementById('speed-group');
+            const pauseBtn = document.getElementById('pause-btn');
+            const speedUpBtn = document.getElementById('speed-up-btn');
+            
+            if (gameMode === 'ai-vs-ai') {
+                speedGroup.style.display = 'block';
+                pauseBtn.style.display = 'inline-block';
+                speedUpBtn.style.display = 'inline-block';
+            } else {
+                speedGroup.style.display = 'none';
+                pauseBtn.style.display = 'none';
+                speedUpBtn.style.display = 'none';
+            }
+            
+            newGame();
+        });
+        
+        document.getElementById('speed-slider').addEventListener('input', function() {
+            aiVsAISpeed = parseInt(this.value);
+            document.getElementById('speed-value').textContent = aiVsAISpeed;
+        });
+        
+        document.getElementById('new-game-btn').addEventListener('click', newGame);
+        document.getElementById('undo-btn').addEventListener('click', undo);
+        
+        document.getElementById('copy-record-btn').addEventListener('click', function() {
+            if (moveHistory.length === 0) {
+                alert('还没有棋谱记录');
+                return;
+            }
+            
+            // 生成棋谱文本
+            const coords = ['A','B','C','D','E','F','G','H','I','J','K','L','M','N','O'];
+            let record = '五子棋对局记录\n';
+            record += '================\n';
+            record += `日期: ${new Date().toLocaleString()}\n`;
+            record += `构建: ${window.__GOMOKU_BUILD__ || 'unknown'}\n`;
+            record += `难度: ${difficultyLog.length ? difficultyLog[0].label : difficultyLabel()}\n`;
+            for (let i = 1; i < difficultyLog.length; i++) {
+                record += `难度变更: 第${difficultyLog[i].ply}手起 → ${difficultyLog[i].label}\n`;
+            }
+            record += `总步数: ${moveHistory.length}\n`;
+            const statusCode = Module._getGameStatus();
+            record += `结果: ${statusCode === 1 ? '黑棋胜' : statusCode === 2 ? '白棋胜' : statusCode === 3 ? '平局' : '未结束'}\n`;
+            record += '================\n\n';
+            
+            for (let i = 0; i < moveHistory.length; i++) {
+                const m = moveHistory[i];
+                // 会话事件（悔棋等）标在下一手之前，便于还原真实对局过程
+                for (const ev of gameEvents) {
+                    if (ev.ply === m.moveNum) record += `—— 本手前：${ev.desc} ——\n`;
+                }
+                const playerStr = m.player === 1 ? '黑' : '白';
+                const coord = coords[m.x] + (m.y + 1);
+                let line = `${m.moveNum}. ${playerStr}棋 ${coord} (x:${m.x}, y:${m.y})`;
+                if (m.stats) {
+                    line += `  [深度${m.stats.depth} 节点${m.stats.nodes} 用时${(Number(m.stats.time) / 1000).toFixed(1)}s 评分${m.stats.score}]`;
+                }
+                record += line + '\n';
+            }
+            // 末尾事件（悔棋后未再落子等）
+            for (const ev of gameEvents) {
+                if (ev.ply > moveHistory.length) record += `—— 其后：${ev.desc} ——\n`;
+            }
+            
+            // 复制到剪贴板
+            navigator.clipboard.writeText(record).then(() => {
+                const btn = document.getElementById('copy-record-btn');
+                const originalText = btn.textContent;
+                btn.textContent = '✓ 已复制!';
+                btn.style.background = '#4CAF50';
+                setTimeout(() => {
+                    btn.textContent = originalText;
+                    btn.style.background = '';
+                }, 2000);
+            }).catch(() => {
+                // 降级方案：使用 textarea
+                const textarea = document.createElement('textarea');
+                textarea.value = record;
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+                
+                const btn = document.getElementById('copy-record-btn');
+                const originalText = btn.textContent;
+                btn.textContent = '✓ 已复制!';
+                btn.style.background = '#4CAF50';
+                setTimeout(() => {
+                    btn.textContent = originalText;
+                    btn.style.background = '';
+                }, 2000);
+            });
+        });
+        
+        document.getElementById('pause-btn').addEventListener('click', function() {
+            aiVsAIPaused = !aiVsAIPaused;
+            this.textContent = aiVsAIPaused ? '继续' : '暂停';
+            
+            if (!aiVsAIPaused && gameMode === 'ai-vs-ai' && gameState === 'playing') {
+                setTimeout(aiMove, aiVsAISpeed);
+            }
+        });
+        
+        document.getElementById('speed-up-btn').addEventListener('click', function() {
+            // 循环切换速度
+            const speeds = [2000, 1000, 500, 200, 100];
+            const currentIdx = speeds.indexOf(aiVsAISpeed);
+            const nextIdx = (currentIdx + 1) % speeds.length;
+            aiVsAISpeed = speeds[nextIdx];
+            document.getElementById('speed-slider').value = aiVsAISpeed;
+            document.getElementById('speed-value').textContent = aiVsAISpeed;
+            this.textContent = aiVsAISpeed + 'ms';
+        });
+        
+        // ============= 初始化 =============
+        function onModuleReady() {
+            if (moduleReady) return;  // 两种就绪路径可能同时到达
+            moduleReady = true;
+            newGame();
+        }
+
+        // 先按视口尺寸初始化棋盘，引擎就绪后再重绘棋子
+        resizeBoard();
+
+        // 引擎若在上面的桥接之前就绪，这里补一次；否则由桥接回调触发。
+        window.__engineReadyHook = onModuleReady;
+        if (window.__engineReady ||
+            (typeof Module !== 'undefined' && typeof Module._getCell === 'function')) {
+            onModuleReady();
+        }
+    </script>
+</body>
+</html>

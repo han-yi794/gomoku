@@ -210,6 +210,9 @@
         .seg { height: 100%; float: left; box-sizing: border-box; }
         .seg.black { background: #111; }
         .seg.white { background: #fff; border-left: 1px solid #8B4513; }
+        .version-row { margin-top: 8px; text-align: center; font-size: 13px; color: #666; }
+        .version-row a { color: #2b6cb0; text-decoration: none; }
+        .version-row a:hover { text-decoration: underline; }
         
         /* ============= 响应式 ============= */
         @media (max-width: 800px) {
@@ -341,9 +344,11 @@
         </div>
     </div>
     
+    <div class="version-row" id="version-row"></div>
+    
     <script>
         // 构建号：发布须知——改这里时，必须把下方引擎脚本引用的 ?v= 参数一起改，两者保持一致。
-        window.__GOMOKU_BUILD__ = '20261031b';
+        window.__GOMOKU_BUILD__ = '20261031c';
         window.Module = window.Module || {};
 
         // 引擎就绪桥接。引擎异步实例化 WASM，缓存命中时它可能在本页面后续脚本
@@ -360,6 +365,28 @@
         // 在统计面板里显示构建号，方便核对当前运行的是哪个版本。
         var _buildEl = document.getElementById('build-id');
         if (_buildEl) _buildEl.textContent = window.__GOMOKU_BUILD__;
+
+        // 版本选择行：可在「最新 / 10.30 / 10.18」三个引擎之间切换试玩。
+        // 子目录（/v1018/、/v1030/）里用 ../ 相对路径返回根目录。
+        (function() {
+            var row = document.getElementById('version-row');
+            if (!row) return;
+            var m = location.pathname.match(/\/(v\d{4})\/?$/);
+            var cur = m ? m[1] : '';
+            var base = cur ? '../' : './';
+            var items = [['', '最新版'], ['v1030', '10.30 版'], ['v1018', '10.18 版']];
+            var html = '对手版本：';
+            for (var i = 0; i < items.length; i++) {
+                var v = items[i][0];
+                if (i) html += ' · ';
+                if (v === cur) {
+                    html += '<b>【' + items[i][1] + '】</b>';
+                } else {
+                    html += '<a href="' + base + (v ? v + '/' : '') + '">' + items[i][1] + '</a>';
+                }
+            }
+            row.innerHTML = html;
+        })();
     </script>
     <script src="gomoku.js"></script>
     <script>
