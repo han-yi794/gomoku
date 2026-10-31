@@ -157,7 +157,7 @@ private:
 // ============= 评估函数 =============
 
 // 计算单个玩家的棋型总分
-int64_t evaluatePatterns(const Board& board, int player);
+int64_t evaluatePatterns(const Board& board, int player, int* outFour = nullptr, int* outOpen3 = nullptr, int* outClosed3 = nullptr);
 
 // 完整评估（当前视角的分数）
 int64_t evaluatePosition(const Board& board);

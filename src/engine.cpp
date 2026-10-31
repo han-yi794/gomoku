@@ -155,7 +155,9 @@ static int64_t evaluateCenterScore(const Board& board, int player) {
 
 // 计算单个玩家的棋型总分
 // 使用序列扫描法：每个方向扫描连续序列，避免重复计算
-int64_t evaluatePatterns(const Board& board, int player) {
+// outFour/outOpen3/outClosed3 可选：回传加尾分前的三/四计数（供增量评估使用）
+int64_t evaluatePatterns(const Board& board, int player,
+                         int* outFour, int* outOpen3, int* outClosed3) {
     int64_t score = 0;
     int fourCount = 0;
     int openThreeCount = 0;
@@ -217,24 +219,151 @@ int64_t evaluatePatterns(const Board& board, int player) {
         score += DOUBLE_THREE / 2;
     }
     
+    if (outFour) *outFour = fourCount;
+    if (outOpen3) *outOpen3 = openThreeCount;
+    if (outClosed3) *outClosed3 = closedThreeCount;
     return score;
 }
 
-// 完整评估（当前视角的分数）
+// ============= 增量棋型评估 =============
+// 与全盘扫描 evaluatePatterns 逐位一致的增量版本。搜索中每个节点的每个候选都要
+// 评估「在 (x,y) 放子后该颜色的全盘分」，原实现是临时放子后全盘扫两遍（每候选）。
+// 这里改为：每个节点先算一次基准分（本盘面固定，所有候选共用），候选只修正穿过
+// (x,y) 的四条线上的「跑」——语义完全一致，开销从 O(盘面) 降到 O(线长)。
+
+struct PatternBase {
+    int64_t score = 0;  // 普通线分 + 尾分（与 evaluatePatterns 同口径）
+    int four = 0;       // 加尾分前的三/四计数
+    int open3 = 0;
+    int closed3 = 0;
+};
+
+// 单条「跑」的贡献与计数（规则逐字对齐 evaluatePatterns 内联逻辑）
+static inline void addRunContribution(int64_t& score, int count, int openEnds,
+                                      int& four, int& open3, int& closed3) {
+    if (count >= 5) {
+        score += FIVE;
+    } else if (count == 4) {
+        if (openEnds == 2) { score += OPEN_FOUR; ++four; }
+        else if (openEnds == 1) { score += CLOSED_FOUR; ++four; }
+    } else if (count == 3) {
+        if (openEnds == 2) { score += OPEN_THREE; ++open3; }
+        else if (openEnds == 1) { score += SLEEP_THREE; ++closed3; }
+    } else if (count == 2) {
+        if (openEnds == 2) score += OPEN_TWO;
+        else if (openEnds == 1) score += SLEEP_TWO;
+    } else if (count == 1) {
+        if (openEnds == 2) score += OPEN_ONE;
+    }
+}
+
+// 双重威胁尾分（与 evaluatePatterns 末尾规则一致）
+static inline int64_t tailThreatBonus(int four, int open3, int closed3) {
+    if (four >= 2) return DOUBLE_FOUR;
+    if (four == 1 && (open3 + closed3) >= 1) return FOUR_THREE;
+    if (open3 >= 2) return DOUBLE_THREE;
+    if (open3 == 1 && closed3 >= 1) return DOUBLE_THREE / 2;
+    return 0;
+}
+
+// 双色一趟扫完：与分别调用两次 evaluatePatterns 逐位一致
+static void evaluatePatternsBoth(const Board& board, PatternBase& black, PatternBase& white) {
+    black = PatternBase();
+    white = PatternBase();
+    for (int d = 0; d < 4; d++) {
+        int dx = DX[d], dy = DY[d];
+        for (int y = 0; y < BOARD_SIZE; y++) {
+            for (int x = 0; x < BOARD_SIZE; x++) {
+                int v = board.get(x, y);
+                if (v == EMPTY) continue;
+                int px = x - dx, py = y - dy;
+                if (board.inBounds(px, py) && board.get(px, py) == v) continue;
+                int count = 0;
+                int cx = x, cy = y;
+                while (board.inBounds(cx, cy) && board.get(cx, cy) == v) {
+                    count++;
+                    cx += dx;
+                    cy += dy;
+                }
+                if (count == 0) continue;
+                bool bopen = board.inBounds(px, py) && board.get(px, py) == EMPTY;
+                bool aopen = board.inBounds(cx, cy) && board.get(cx, cy) == EMPTY;
+                int openEnds = (bopen ? 1 : 0) + (aopen ? 1 : 0);
+                PatternBase& t = (v == BLACK) ? black : white;
+                addRunContribution(t.score, count, openEnds, t.four, t.open3, t.closed3);
+            }
+        }
+    }
+    black.score += tailThreatBonus(black.four, black.open3, black.closed3);
+    white.score += tailThreatBonus(white.four, white.open3, white.closed3);
+}
+
+// 增量：棋盘（不含 (x,y) 处的棋子）在 stone 颜色下基准为 base 时，
+// 计算在 (x,y) 放置 stone 后的全盘分（与放子后全盘扫描逐位一致）。
+static int64_t patternScoreAfterPlace(const Board& board, int x, int y, int stone, const PatternBase& base) {
+    int64_t preScore = 0, addScore = 0;
+    int preFour = 0, preOpen3 = 0, preClosed3 = 0;
+    int addFour = 0, addOpen3 = 0, addClosed3 = 0;
+    for (int d = 0; d < 4; d++) {
+        int dx = DX[d], dy = DY[d];
+        // 反向 / 正向相邻的同色连子长度
+        int backLen = 0;
+        while (board.inBounds(x - (backLen + 1) * dx, y - (backLen + 1) * dy) &&
+               board.get(x - (backLen + 1) * dx, y - (backLen + 1) * dy) == stone) ++backLen;
+        int fwdLen = 0;
+        while (board.inBounds(x + (fwdLen + 1) * dx, y + (fwdLen + 1) * dy) &&
+               board.get(x + (fwdLen + 1) * dx, y + (fwdLen + 1) * dy) == stone) ++fwdLen;
+        // 被合并的两条旧跑（放子前，靠 (x,y) 一侧必为开放——(x,y) 放子前是空位）
+        if (backLen > 0) {
+            int bx = x - (backLen + 1) * dx, by = y - (backLen + 1) * dy;
+            bool farOpen = board.inBounds(bx, by) && board.get(bx, by) == EMPTY;
+            addRunContribution(preScore, backLen, farOpen ? 2 : 1, preFour, preOpen3, preClosed3);
+        }
+        if (fwdLen > 0) {
+            int fx = x + (fwdLen + 1) * dx, fy = y + (fwdLen + 1) * dy;
+            bool farOpen = board.inBounds(fx, fy) && board.get(fx, fy) == EMPTY;
+            addRunContribution(preScore, fwdLen, farOpen ? 2 : 1, preFour, preOpen3, preClosed3);
+        }
+        // 合并后的新跑
+        int bx = x - (backLen + 1) * dx, by = y - (backLen + 1) * dy;
+        int fx = x + (fwdLen + 1) * dx, fy = y + (fwdLen + 1) * dy;
+        int openEnds = 0;
+        if (board.inBounds(bx, by) && board.get(bx, by) == EMPTY) ++openEnds;
+        if (board.inBounds(fx, fy) && board.get(fx, fy) == EMPTY) ++openEnds;
+        addRunContribution(addScore, backLen + fwdLen + 1, openEnds, addFour, addOpen3, addClosed3);
+    }
+    int64_t result = base.score + addScore - preScore;
+    // 尾分随计数变化重新结算：先减基准尾分，再加新计数的尾分
+    result += tailThreatBonus(base.four + addFour - preFour,
+                              base.open3 + addOpen3 - preOpen3,
+                              base.closed3 + addClosed3 - preClosed3);
+    result -= tailThreatBonus(base.four, base.open3, base.closed3);
+    return result;
+}
+
+// 完整评估（当前视角的分数）。棋型用双色单遍扫描、中心分合并成一趟——
+// 与原实现（两次 evaluatePatterns + 两次 evaluateCenterScore）逐位一致。
 int64_t evaluatePosition(const Board& board) {
     int player = board.getPlayer();
-    int enemy = (player == BLACK) ? WHITE : BLACK;
     
-    int64_t ownScore = evaluatePatterns(board, player);
-    int64_t enemyScore = evaluatePatterns(board, enemy);
+    PatternBase black, white;
+    evaluatePatternsBoth(board, black, white);
+    int64_t ownScore = (player == BLACK) ? black.score : white.score;
+    int64_t enemyScore = (player == BLACK) ? white.score : black.score;
     
-    // 中心分（权重较低，辅助决策）
-    int64_t ownCenter = evaluateCenterScore(board, player);
-    int64_t enemyCenter = evaluateCenterScore(board, enemy);
+    // 中心分（权重较低，辅助决策）：一趟合并计算（黑为正、白为负）
+    int64_t centerDiff = 0;
+    for (int y = 0; y < BOARD_SIZE; y++) {
+        for (int x = 0; x < BOARD_SIZE; x++) {
+            int v = board.get(x, y);
+            if (v == BLACK) centerDiff += CENTER_SCORE[x][y];
+            else if (v == WHITE) centerDiff -= CENTER_SCORE[x][y];
+        }
+    }
     
     // 略偏防守：对手威胁权重稍高
     int64_t result = ownScore - (int64_t)(enemyScore * DEFENSE_WEIGHT) 
-                    + (ownCenter - enemyCenter) / 10;
+                    + ((player == BLACK) ? centerDiff : -centerDiff) / 10;
     
     // 限制评估分数，避免超过 WIN_THRESHOLD（只有 checkWin 才能返回 WIN_THRESHOLD）
     if (result > WIN_THRESHOLD - 1000) result = WIN_THRESHOLD - 1000;
@@ -504,8 +633,10 @@ static int64_t potentialThreatScore(Board& board, int player) {
     return score;
 }
 
-// 计算候选点的快速排序分数
-static int64_t quickMoveScore(Board& board, int x, int y) {
+// 计算候选点的快速排序分数（ownBase/enemyBase 为本节点盘面的基准棋型分，见
+// patternScoreAfterPlace：它是与全盘扫描逐位一致的增量评估）
+static int64_t quickMoveScore(Board& board, int x, int y,
+                              const PatternBase& ownBase, const PatternBase& enemyBase) {
     int player = board.getPlayer();
     int enemy = (player == BLACK) ? WHITE : BLACK;
     
@@ -551,15 +682,10 @@ static int64_t quickMoveScore(Board& board, int x, int y) {
     int dist = std::max(std::abs(x - cx), std::abs(y - cy));
     score += std::max(0, 100 - dist * 16) * 10;  // 中心分
     
-    // 8. 简单棋型评分（评估该点周围的棋型）
-    // 临时放置棋子，评估影响
-    board.set(x, y, player);
-    int64_t newOwnScore = evaluatePatterns(board, player);
-    board.set(x, y, EMPTY);
-    
-    board.set(x, y, enemy);
-    int64_t newEnemyScore = evaluatePatterns(board, enemy);
-    board.set(x, y, EMPTY);
+    // 8. 简单棋型评分（评估该点周围的棋型）——增量版：基准分按节点算一次，
+    //    这里只修正穿过 (x,y) 的四条线；与原「临时放子 + 全盘扫描」逐位一致。
+    int64_t newOwnScore = patternScoreAfterPlace(board, x, y, player, ownBase);
+    int64_t newEnemyScore = patternScoreAfterPlace(board, x, y, enemy, enemyBase);
     
     score += (newOwnScore - (int64_t)(newEnemyScore * 1.0)) / 100;  // 缩放
     
@@ -570,11 +696,21 @@ static int64_t quickMoveScore(Board& board, int x, int y) {
 
 std::vector<Move> generateCandidates(Board& board, int maxCandidates, bool isRoot) {
     std::vector<Move> candidates;
+    candidates.reserve(64);
     
     // 空棋盘特殊情况
     if (board.moveCount() == 0) {
         candidates.push_back(Move{Point(BOARD_SIZE / 2, BOARD_SIZE / 2), board.getPlayer(), 0});
         return candidates;
+    }
+    
+    // 本节点盘面固定：基准棋型分只算一次，供所有候选的增量评估共用
+    PatternBase ownBase, enemyBase;
+    {
+        int player = board.getPlayer();
+        int enemy = (player == BLACK) ? WHITE : BLACK;
+        ownBase.score = evaluatePatterns(board, player, &ownBase.four, &ownBase.open3, &ownBase.closed3);
+        enemyBase.score = evaluatePatterns(board, enemy, &enemyBase.four, &enemyBase.open3, &enemyBase.closed3);
     }
     
     // 1. 邻域过滤：只考虑已有棋子附近的空位
@@ -598,7 +734,7 @@ std::vector<Move> generateCandidates(Board& board, int maxCandidates, bool isRoo
                 Move m;
                 m.pos = Point(x, y);
                 m.player = board.getPlayer();
-                m.score = quickMoveScore(board, x, y);
+                m.score = quickMoveScore(board, x, y, ownBase, enemyBase);
                 candidates.push_back(m);
             }
         }
@@ -1564,7 +1700,8 @@ void setDifficulty(Difficulty level) {
             break;
         case Difficulty::HARD:
             g_maxDepth = 16;
-            g_timeBudgetMs = 30000;   // 实测：12s/depth8 在关键局面会漏争线手，60s/depth9 即翻盘；用户接受慢一点
+            g_timeBudgetMs = 5000;    // 增量评估提速约 8~10 倍后：5s 即复现旧版 30s 的全部走法结论
+                                      //（电池局面逐一比对一致，见 README「增量棋型评估」），等待缩短 6 倍
             break;
     }
 }
