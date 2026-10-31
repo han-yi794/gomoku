@@ -3,352 +3,252 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>五子棋 AI - Gomoku AI</title>
-    <!-- 内联 SVG 图标：避免请求 favicon.ico 产生 404 -->
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23DEB887'/%3E%3Ccircle cx='11' cy='16' r='5' fill='%23111'/%3E%3Ccircle cx='21' cy='16' r='5' fill='%23fff' stroke='%23111'/%3E%3C/svg%3E">
+    <title>五子棋 · AI 对弈</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23e9dcc0'/%3E%3Ccircle cx='11' cy='16' r='5' fill='%2317191b'/%3E%3Ccircle cx='21' cy='16' r='5' fill='%23fff' stroke='%2317191b' stroke-width='1.5'/%3E%3C/svg%3E">
     <style>
+        /* 方向：framed-sheet（边框 + 白纸面）。产品面孔：边框取棋盘材料色（暖纸），
+           数据色只用唯一青绿（--accent）——最后一手标记与链接。字体自托管（OFL）。 */
+        @font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 400; font-display: swap; src: url('../fonts/ibmplexsans-400.woff2') format('woff2'); }
+        @font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 500; font-display: swap; src: url('../fonts/ibmplexsans-500.woff2') format('woff2'); }
+        @font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 600; font-display: swap; src: url('../fonts/ibmplexsans-600.woff2') format('woff2'); }
+        @font-face { font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 400; font-display: swap; src: url('../fonts/ibmplexmono-400.woff2') format('woff2'); }
+        @font-face { font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 500; font-display: swap; src: url('../fonts/ibmplexmono-500.woff2') format('woff2'); }
+
+        :root {
+            --ground: #f2f3f1;
+            --surface: #ffffff;
+            --raised: #f4f6f8;
+            --active: #ebedee;
+            --border: #e8eaec;
+            --rule: #f0f1f2;
+            --control: #cdced1;
+            --text: #131416;
+            --muted: #5d5f60;
+            --accent: #1b6c80;
+            --wood: #e9dcc0;
+            --pill-neutral-bg: #ebedee;
+            --pill-neutral-ink: #353736;
+            --radius-card: 8px;
+            --radius-control: 6px;
+            --radius-sheet: 16px;
+            --pad: 24px;
+            --font-text: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+            --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+        }
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            color: #eee;
-            padding-bottom: env(safe-area-inset-bottom);
-        }
-        
-        .container {
-            display: flex;
-            gap: 30px;
-            padding: 20px;
-            flex-wrap: wrap;
-            justify-content: center;
-            /* auto 外边距替代 align-items:center：内容比视口高时不会把顶部裁掉 */
-            margin: auto;
-            width: 100%;
-        }
-        
-        .game-area {
+            font-family: var(--font-text);
+            font-size: 14px;
+            color: var(--text);
+            background: var(--ground);
+            min-height: 100dvh;
             display: flex;
             flex-direction: column;
-            align-items: center;
-            max-width: 100%;
-        }
-        
-        canvas {
-            border: 3px solid #ffd700;
-            border-radius: 8px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-            cursor: pointer;
-            display: block;
-            max-width: 100%;
-            /* 棋盘上不触发双击缩放/滚动，点按手感等同原生 app */
-            touch-action: none;
-            -webkit-user-select: none;
-            user-select: none;
-            -webkit-tap-highlight-color: transparent;
-        }
-        
-        .controls {
-            background: rgba(255,255,255,0.05);
-            border-radius: 12px;
-            padding: 25px;
-            width: 280px;
-            backdrop-filter: blur(10px);
-        }
-        
-        .title {
-            font-size: 24px;
-            font-weight: bold;
-            text-align: center;
-            margin-bottom: 20px;
-            color: #ffd700;
-            text-shadow: 0 0 10px rgba(255,215,0,0.5);
-        }
-        
-        .control-group {
-            margin-bottom: 15px;
-        }
-        
-        .control-group label {
-            display: block;
-            margin-bottom: 8px;
-            font-size: 14px;
-            color: #aaa;
-        }
-        
-        .control-group select,
-        .control-group input[type="range"] {
-            width: 100%;
-            padding: 8px;
-            border: none;
-            border-radius: 6px;
-            background: rgba(255,255,255,0.1);
-            color: #fff;
-            font-size: 14px;
-        }
-        
-        .btn-group {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-        
-        button {
-            flex: 1;
-            padding: 12px;
-            border: none;
-            border-radius: 6px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            font-size: 14px;
-            font-weight: bold;
-            cursor: pointer;
-            transition: all 0.3s;
-        }
-        
-        button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102,126,234,0.4);
-        }
-        
-        button:active {
-            transform: translateY(0);
-        }
-        
-        button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none;
-        }
-        
-        button.secondary {
-            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-        }
-        
-        button.warning {
-            background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);
-            color: #333;
-        }
-        
-        .status {
-            margin-top: 20px;
-            padding: 15px;
-            background: rgba(255,255,255,0.05);
-            border-radius: 8px;
-            text-align: center;
-            font-size: 16px;
-        }
-        
-        .status .turn-indicator {
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            margin-right: 8px;
-            vertical-align: middle;
-            border: 2px solid #fff;
-        }
-        
-        .status .turn-indicator.black {
-            background: #333;
-        }
-        
-        .status .turn-indicator.white {
-            background: #fff;
-        }
-        
-        .stats {
-            margin-top: 15px;
-            padding: 15px;
-            background: rgba(255,255,255,0.03);
-            border-radius: 8px;
-            font-size: 12px;
-            color: #888;
-        }
-        
-        .stats div {
-            margin: 5px 0;
-        }
-        
-        .winner-msg {
-            color: #ffd700;
-            font-weight: bold;
-            animation: pulse 1s infinite;
-        }
-        
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        
-        .thinking {
-            color: #667eea;
-            animation: blink 0.8s infinite;
-        }
-        
-        @keyframes blink {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.3; }
-        }
-        
-        .mode-info {
-            margin-top: 15px;
-            padding: 10px;
-            background: rgba(102,126,234,0.1);
-            border-radius: 6px;
-            font-size: 12px;
-            color: #aaa;
-            text-align: center;
-        }
-        
-        .win-rate { margin-top: 10px; text-align: center; font-size: 14px; color: #333; }
-        .bar-wrap { width: 260px; height: 7px; border: 1px solid #8B4513; margin: 4px auto 0 auto; background: #fff; overflow: hidden; box-sizing: border-box; }
-        .seg { height: 100%; float: left; box-sizing: border-box; }
-        .seg.black { background: #111; }
-        .seg.white { background: #fff; border-left: 1px solid #8B4513; }
-        .version-row { margin-top: 8px; text-align: center; font-size: 13px; color: #666; }
-        .version-row a { color: #2b6cb0; text-decoration: none; }
-        .version-row a:hover { text-decoration: underline; }
-        
-        /* ============= 响应式 ============= */
-        @media (max-width: 800px) {
-            .container {
-                flex-direction: column;
-                align-items: center;
-                gap: 10px;
-                padding: 10px;
-                padding-left: max(10px, env(safe-area-inset-left));
-                padding-right: max(10px, env(safe-area-inset-right));
-            }
-            .controls {
-                width: 100%;
-                max-width: 420px;
-                padding: 14px;
-            }
-            .mode-info { margin-top: 8px; padding: 6px; }
-            .title {
-                font-size: 20px;
-                margin-bottom: 12px;
-            }
-            button {
-                min-height: 44px;   /* 触控目标下限 */
-                font-size: 15px;
-                padding: 12px 8px;
-            }
-            .btn-group { gap: 8px; }
-            .control-group { margin-bottom: 10px; }
-            .control-group select,
-            .control-group input[type="range"] { padding: 10px 8px; font-size: 16px; }
-            .status { margin-top: 14px; padding: 12px; }
-            /* 统计区改两列，省下的高度让按钮尽量留在首屏 */
-            .stats {
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 4px 12px;
-                margin-top: 10px;
-                padding: 10px;
-            }
-            .stats div { margin: 0; }
+            padding-bottom: env(safe-area-inset-bottom);
         }
 
-        /* 手机横屏（矮视口）：棋盘与控制区并排，避免整页上下滚动 */
-        @media (orientation: landscape) and (max-height: 560px) {
-            .container {
-                flex-direction: row;
-                align-items: center;
-                gap: 12px;
-                padding: 8px;
-            }
-            .controls {
-                max-width: 320px;
-                padding: 14px;
-                max-height: calc(100vh - 16px);
-                overflow-y: auto;   /* 兜底：面板再长也不撑高整页 */
-            }
-            .title { font-size: 18px; margin-bottom: 8px; }
-            .mode-info { margin-top: 8px; padding: 6px; }
-            .control-group { margin-bottom: 8px; }
-            /* 搜索深度/节点数属于调试信息，矮视口优先保证棋盘与操作可用 */
-            .stats { display: none; }
+        /* ===== 顶栏（48px，与边框同色，无分隔线） ===== */
+        .topbar { height: 48px; flex: none; display: flex; align-items: center; }
+        .topbar-inner { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 var(--pad); }
+        .wordmark { font-size: 16px; font-weight: 600; display: flex; align-items: baseline; gap: 8px; }
+        .wordmark-sub { font-size: 12px; font-weight: 400; color: var(--muted); }
+        .topbar-right { display: flex; align-items: center; gap: 16px; min-width: 0; }
+        .build { font-family: var(--font-mono); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .status { display: inline-flex; align-items: center; gap: 8px; height: 26px; padding: 0 12px; border-radius: 999px; background: var(--pill-neutral-bg); color: var(--pill-neutral-ink); font-size: 13px; white-space: nowrap; }
+        .status .turn-indicator { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #17191b; border: 1px solid rgba(0,0,0,.35); }
+        .status .turn-indicator.white { background: #fff; border-color: rgba(0,0,0,.28); }
+        .thinking { color: var(--accent); animation: think 1.4s ease-in-out infinite; }
+        @keyframes think { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+        .winner-msg { font-weight: 600; color: var(--text); }
+
+        /* ===== 边框与白纸面 ===== */
+        .frame { flex: 1; display: flex; min-height: 0; flex-direction: column; }
+        .sheet { flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sheet); margin: 0 8px 8px; padding: var(--pad); }
+        .sheet-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: var(--pad); align-items: start; }
+
+        /* ===== 棋盘面板 ===== */
+        .board-panel { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+        .board-wrap { display: flex; justify-content: center; }
+        #board { display: block; max-width: 100%; background: var(--wood); border: 1px solid var(--border); border-radius: 10px; cursor: pointer; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+        .board-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 13px; }
+        .mode-info { color: var(--muted); }
+
+        /* ===== 右栏 ===== */
+        .rail { display: flex; flex-direction: column; min-width: 0; border-left: 1px solid var(--rule); padding-left: var(--pad); }
+        .rail-block { padding: 16px 0; border-top: 1px solid var(--rule); }
+        .rail-block:first-child { border-top: none; padding-top: 0; }
+        .rail-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+        .rail-head h2 { font-size: 16px; font-weight: 600; }
+        .rail-note { font-size: 13px; color: var(--muted); }
+
+        /* 胜率条（黑/白分段 = 双方） */
+        .bar-wrap { height: 8px; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; display: flex; background: var(--surface); }
+        .seg { height: 100%; flex: 0 0 auto; }
+        .seg.black { background: #17191b; }
+        .seg.white { background: #ffffff; }
+        .wr-text { margin-top: 8px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+        /* 搜索统计：一格四分栏 */
+        .stats { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--border); border-radius: var(--radius-card); margin-top: 16px; }
+        .stat { padding: 10px 12px; border-left: 1px solid var(--rule); min-width: 0; }
+        .stat:first-child { border-left: none; }
+        .stat-k { display: block; font-size: 13px; color: var(--muted); }
+        .stat-v { display: block; margin-top: 2px; font-size: 18px; line-height: 1.2; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+        /* 棋谱 */
+        .kifu { max-height: 240px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-card); }
+        .kifu-row { display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 12px; border-top: 1px solid var(--rule); font-size: 13px; }
+        .kifu-row:first-child { border-top: none; }
+        .kifu-row.current { background: var(--raised); }
+        .kifu-n { width: 22px; text-align: right; color: var(--muted); font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+        .kifu-stone { width: 10px; height: 10px; border-radius: 50%; flex: none; background: #17191b; border: 1px solid rgba(0,0,0,.35); }
+        .kifu-stone.white { background: #fff; border-color: rgba(0,0,0,.28); }
+        .kifu-coord { width: 44px; font-weight: 500; }
+        .kifu-note { margin-left: auto; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+        .kifu-empty { padding: 16px 12px; color: var(--muted); font-size: 13px; }
+
+        /* 设置与控制 */
+        .control-group { margin-bottom: 12px; }
+        .control-group label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; }
+        select { width: 100%; height: 32px; padding: 0 10px; border: 1px solid var(--control); border-radius: var(--radius-control); background: var(--surface); color: var(--text); font-size: 14px; font-family: inherit; }
+        select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+        input[type="range"] { width: 100%; accent-color: var(--accent); }
+        .btn-group { display: flex; gap: 8px; }
+        .btn-group + .btn-group { margin-top: 8px; }
+        button { flex: 1; height: 32px; padding: 0 12px; border: 1px solid transparent; border-radius: var(--radius-control); background: #131416; color: #fff; font-size: 13px; font-weight: 500; font-family: inherit; cursor: pointer; white-space: nowrap; }
+        button:hover { background: #26282a; }
+        button:active { background: #0b0c0d; }
+        button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        button:disabled { opacity: .45; cursor: not-allowed; }
+        button.secondary { background: var(--surface); border-color: var(--control); color: var(--text); }
+        button.secondary:hover { background: var(--raised); }
+        button.secondary:active { background: var(--active); }
+
+        /* 版本行（页脚） */
+        .version-row { font-size: 13px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+        .version-row a { color: var(--accent); text-decoration: none; }
+        .version-row a:hover { text-decoration: underline; }
+        .version-row b { font-weight: 600; color: var(--text); }
+
+        /* ===== 响应式：窄屏抽掉侧栏，纸面即屏幕 ===== */
+        @media (max-width: 1060px) {
+            .topbar-inner { padding: 0 16px; }
+            .sheet { margin: 0 8px 8px; padding: 16px; }
+            .sheet-grid { grid-template-columns: 1fr; gap: 8px; }
+            .rail { border-left: none; padding-left: 0; border-top: 1px solid var(--rule); padding-top: 8px; }
+            .build { display: none; }
+        }
+        @media (max-width: 420px) {
+            .wordmark-sub { display: none; }
+            .stats { grid-template-columns: repeat(2, 1fr); }
+            .stat:nth-child(3) { border-left: none; }
+            .stat:nth-child(n+3) { border-top: 1px solid var(--rule); }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="game-area">
-            <canvas id="board" width="600" height="600"></canvas>
-            <div class="mode-info">
-                <span id="mode-text">人机对战模式</span>
+    <header class="topbar">
+        <div class="topbar-inner">
+            <h1 class="wordmark">五子棋 <span class="wordmark-sub">AI 对弈</span></h1>
+            <div class="topbar-right">
+                <div class="status" id="status">
+                    <span class="turn-indicator black"></span>
+                    黑棋先手
+                </div>
+                <span class="build" id="build-id">-</span>
             </div>
         </div>
-        <div class="win-rate" id="win-rate">
-            <div class="bar-wrap">
-                <span class="seg black" id="wr-black" style="width:50%"></span>
-                <span class="seg white" id="wr-white" style="width:50%"></span>
+    </header>
+
+    <div class="frame">
+        <main class="sheet">
+            <div class="sheet-grid">
+                <section class="board-panel">
+                    <div class="board-wrap">
+                        <canvas id="board" width="600" height="600"></canvas>
+                    </div>
+                    <div class="board-foot">
+                        <span class="mode-info"><span id="mode-text">人机对战模式</span></span>
+                        <span>你执黑先手，点击棋盘落子</span>
+                    </div>
+                </section>
+
+                <aside class="rail">
+                    <section class="rail-block">
+                        <div class="rail-head">
+                            <h2>对局</h2>
+                            <span class="rail-note">胜率由引擎评估</span>
+                        </div>
+                        <div class="win-rate">
+                            <div class="bar-wrap">
+                                <span class="seg black" id="wr-black" style="width:50%"></span>
+                                <span class="seg white" id="wr-white" style="width:50%"></span>
+                            </div>
+                            <div class="wr-text" id="wr-text">黑 50% · 白 50%</div>
+                        </div>
+                        <div class="stats" id="stats">
+                            <div class="stat"><span class="stat-k">步数</span><span class="stat-v" id="move-count">0</span></div>
+                            <div class="stat"><span class="stat-k">搜索深度</span><span class="stat-v" id="search-depth">-</span></div>
+                            <div class="stat"><span class="stat-k">节点数</span><span class="stat-v" id="node-count">-</span></div>
+                            <div class="stat"><span class="stat-k">思考时间</span><span class="stat-v"><span id="think-time">-</span><span style="font-size:12px;color:var(--muted)"> ms</span></span></div>
+                        </div>
+                    </section>
+
+                    <section class="rail-block">
+                        <div class="rail-head">
+                            <h2>棋谱</h2>
+                            <span class="rail-note">白棋附搜索印记</span>
+                        </div>
+                        <div class="kifu" id="kifu-list">
+                            <div class="kifu-empty">还没有落子。你执黑先手。</div>
+                        </div>
+                    </section>
+
+                    <section class="rail-block">
+                        <div class="rail-head">
+                            <h2>设置</h2>
+                        </div>
+                        <div class="control-group">
+                            <label for="mode-select">游戏模式</label>
+                            <select id="mode-select">
+                                <option value="human">人机对战</option>
+                                <option value="ai-vs-ai">机机对战</option>
+                            </select>
+                        </div>
+                        <div class="control-group">
+                            <label for="difficulty-select">AI 难度</label>
+                            <select id="difficulty-select">
+                                <option value="0">简单</option>
+                                <option value="1" selected>中等</option>
+                                <option value="2">困难</option>
+                            </select>
+                        </div>
+                        <div class="control-group" id="speed-group" style="display:none;">
+                            <label>对局速度: <span id="speed-value">500</span> ms</label>
+                            <input type="range" id="speed-slider" min="100" max="2000" value="500" step="100">
+                        </div>
+                        <div class="btn-group">
+                            <button id="new-game-btn">新游戏</button>
+                            <button id="undo-btn" class="secondary">悔棋</button>
+                            <button id="copy-record-btn" class="secondary">复制棋谱</button>
+                        </div>
+                        <div class="btn-group">
+                            <button id="pause-btn" class="secondary" style="display:none;">暂停</button>
+                            <button id="speed-up-btn" class="secondary" style="display:none;">加速</button>
+                        </div>
+                    </section>
+
+                    <section class="rail-block">
+                        <div class="version-row" id="version-row"></div>
+                    </section>
+                </aside>
             </div>
-            <div class="wr-text" id="wr-text">平局 50% / 50%</div>
-        </div>
-        
-        <div class="controls">
-            <h1 class="title">五子棋 AI</h1>
-            
-            <div class="control-group">
-                <label>游戏模式</label>
-                <select id="mode-select">
-                    <option value="human">人机对战</option>
-                    <option value="ai-vs-ai">机机对战</option>
-                </select>
-            </div>
-            
-            <div class="control-group">
-                <label>AI 难度</label>
-                <select id="difficulty-select">
-                    <option value="0">简单 (Depth 4)</option>
-                    <option value="1" selected>中等 (Depth 8)</option>
-                    <option value="2">困难 (Depth 16)</option>
-                </select>
-            </div>
-            
-            <div class="control-group" id="speed-group" style="display:none;">
-                <label>对局速度: <span id="speed-value">500</span>ms</label>
-                <input type="range" id="speed-slider" min="100" max="2000" value="500" step="100">
-            </div>
-            
-            <div class="btn-group">
-                <button id="new-game-btn">新游戏</button>
-                <button id="undo-btn" class="secondary">悔棋</button>
-                <button id="copy-record-btn" class="secondary">复制棋谱</button>
-            </div>
-            
-            <div class="btn-group" style="margin-top:10px;">
-                <button id="pause-btn" class="warning" style="display:none;">暂停</button>
-                <button id="speed-up-btn" class="warning" style="display:none;">加速</button>
-            </div>
-            
-            <div class="status" id="status">
-                <span class="turn-indicator black"></span>
-                黑棋先手
-            </div>
-            
-            <div class="stats" id="stats">
-                <div>步数: <span id="move-count">0</span></div>
-                <div>搜索深度: <span id="search-depth">-</span></div>
-                <div>节点数: <span id="node-count">-</span></div>
-                <div>思考时间: <span id="think-time">-</span>ms</div>
-                <div>构建: <span id="build-id">-</span></div>
-            </div>
-        </div>
+        </main>
     </div>
-    
-    <div class="version-row" id="version-row"></div>
-    
+
     <script>
         // 构建号：发布须知——改这里时，必须把下方引擎脚本引用的 ?v= 参数一起改，两者保持一致。
-        window.__GOMOKU_BUILD__ = '20261031c（引擎 10.30）';
+        window.__GOMOKU_BUILD__ = '20261031d（引擎 10.30）';
         window.Module = window.Module || {};
 
         // 引擎就绪桥接。引擎异步实例化 WASM，缓存命中时它可能在本页面后续脚本
@@ -388,7 +288,7 @@
             row.innerHTML = html;
         })();
     </script>
-    <script src="gomoku.js"></script>
+<script src="gomoku.js"></script>
     <script>
         // ============= 全局状态 =============
         let moduleReady = false;
@@ -417,17 +317,23 @@
         let boardScale = 1;
         let resizePending = false;
 
-        // 按视口算出棋盘的 CSS 显示边长：竖屏按宽度收敛，手机横屏（矮视口）
-        // 按高度收敛，保证棋盘始终完整可见、不需要滚动。
+        // 按视口算出棋盘的 CSS 显示边长：窄屏按宽度收敛（棋盘完整可见、不滚动），
+        // 大屏按左栏宽度与可用高度放大（背板分辨率随显示尺寸缩放，不会糊）。
         function computeBoardDisplaySize() {
-            const gutter = 34;   // 容器 padding + 棋盘边框
-            let available = window.innerWidth - gutter;
+            const sideBySide = window.innerWidth > 1060;
+            // 横向留给棋盘的宽度：大屏 = 窗口 − 纸面边距/内边距 − 右栏 − 栏距；
+            // 窄屏 = 窗口 − 纸面边距/内边距。
+            let available = window.innerWidth - (sideBySide ? 428 : 50);
+            available = Math.min(available, sideBySide ? 900 : CANVAS_SIZE);
             const isShortLandscape = window.innerWidth > window.innerHeight &&
                                     window.innerHeight < 560;
             if (isShortLandscape) {
                 available = Math.min(available, window.innerHeight - 80);
+            } else if (sideBySide) {
+                // 大屏：给顶栏、脚注行和纸面内边距留出高度，棋盘不把页面撑出滚动
+                available = Math.min(available, window.innerHeight - 190);
             }
-            return Math.max(240, Math.min(CANVAS_SIZE, Math.floor(available)));
+            return Math.max(240, Math.floor(available));
         }
 
         function resizeBoard() {
@@ -456,11 +362,11 @@
         // ============= 渲染函数 =============
         function drawBoard() {
             ctx.setTransform(boardScale, 0, 0, boardScale, 0, 0);
-            ctx.fillStyle = '#DEB887';
+            ctx.fillStyle = '#e9dcc0';
             ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
             
             // 画网格线
-            ctx.strokeStyle = '#8B4513';
+            ctx.strokeStyle = '#ab9570';
             ctx.lineWidth = 1;
             for (let i = 0; i < BOARD_SIZE; i++) {
                 ctx.beginPath();
@@ -476,7 +382,7 @@
             
             // 画星位
             const stars = [[3,3], [3,11], [11,3], [11,11], [7,7]];
-            ctx.fillStyle = '#8B4513';
+            ctx.fillStyle = '#ab9570';
             stars.forEach(([x, y]) => {
                 ctx.beginPath();
                 ctx.arc(PADDING + x * CELL_SIZE, PADDING + y * CELL_SIZE, 4, 0, Math.PI * 2);
@@ -493,6 +399,15 @@
                         }
                     }
                 }
+            }
+            
+            // 最后一手：青绿圆点（全页唯一数据色）
+            if (moduleReady && moveHistory.length > 0) {
+                const lm = moveHistory[moveHistory.length - 1];
+                ctx.beginPath();
+                ctx.arc(PADDING + lm.x * CELL_SIZE, PADDING + lm.y * CELL_SIZE, 4, 0, Math.PI * 2);
+                ctx.fillStyle = '#1b6c80';
+                ctx.fill();
             }
             
             // 高亮上一步落子（棋子中央画红色圆环，黑白子都清晰可见）
@@ -519,21 +434,12 @@
             ctx.fillStyle = 'rgba(0,0,0,0.3)';
             ctx.fill();
             
-            // 棋子
-            const gradient = ctx.createRadialGradient(cx - 5, cy - 5, 0, cx, cy, radius);
-            if (player === 1) {  // Black
-                gradient.addColorStop(0, '#555');
-                gradient.addColorStop(1, '#111');
-            } else {  // White
-                gradient.addColorStop(0, '#fff');
-                gradient.addColorStop(1, '#ccc');
-            }
-            
+            // 棋子：扁平双色 + 细描边（不用渐变）
             ctx.beginPath();
             ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-            ctx.fillStyle = gradient;
+            ctx.fillStyle = player === 1 ? '#17191b' : '#ffffff';
             ctx.fill();
-            ctx.strokeStyle = player === 1 ? '#000' : '#999';
+            ctx.strokeStyle = player === 1 ? '#0a0b0c' : '#c2bcb0';
             ctx.lineWidth = 1;
             ctx.stroke();
         }
@@ -551,13 +457,13 @@
             if (status === 1) {
                 gameState = 'black-wins';
                 document.getElementById('status').innerHTML = 
-                    '<span class="winner-msg">🎉 黑棋获胜！</span>';
+                    '<span class="winner-msg">黑棋获胜</span>';
                 document.getElementById('undo-btn').disabled = false;
                 document.getElementById('new-game-btn').focus();
             } else if (status === 2) {
                 gameState = 'white-wins';
                 document.getElementById('status').innerHTML = 
-                    '<span class="winner-msg">🎉 白棋获胜！</span>';
+                    '<span class="winner-msg">白棋获胜</span>';
                 document.getElementById('undo-btn').disabled = false;
                 document.getElementById('new-game-btn').focus();
             } else if (status === 3) {
@@ -585,6 +491,31 @@
             document.getElementById('think-time').textContent = time || '-';
         }
         
+        // 棋谱：每手一行；白棋（AI）附上引擎搜索印记（深度 / 用时）
+        function renderKifu() {
+            const list = document.getElementById('kifu-list');
+            if (!list) return;
+            if (moveHistory.length === 0) {
+                list.innerHTML = '<div class="kifu-empty">还没有落子。你执黑先手。</div>';
+                return;
+            }
+            const coords = 'ABCDEFGHIJKLMNO';
+            let html = '';
+            for (const m of moveHistory) {
+                const coord = coords[m.x] + (m.y + 1);
+                const note = (m.player === 2 && m.stats)
+                    ? ('d' + m.stats.depth + ' · ' + (Number(m.stats.time) / 1000).toFixed(1) + 's')
+                    : '';
+                html += '<div class="kifu-row' + (m.moveNum === moveHistory.length ? ' current' : '') + '">'
+                     + '<span class="kifu-n">' + m.moveNum + '</span>'
+                     + '<span class="kifu-stone ' + (m.player === 1 ? 'black' : 'white') + '"></span>'
+                     + '<span class="kifu-coord">' + coord + '</span>'
+                     + '<span class="kifu-note">' + note + '</span></div>';
+            }
+            list.innerHTML = html;
+            list.scrollTop = list.scrollHeight;
+        }
+        
         // 胜率：引擎评分在 ±WIN_THRESHOLD(1000万) 之间，线性映射到 [0,1]
         function updateWinRate(score) {
             var p = 0.5 + Number(score) / (2 * 10000000);
@@ -594,7 +525,7 @@
             var w = 100 - b;
             document.getElementById('wr-black').style.width = b + '%';
             document.getElementById('wr-white').style.width = w + '%';
-            document.getElementById('wr-text').textContent = '胜率 黑 ' + b + '% / 白 ' + w + '%';
+            document.getElementById('wr-text').textContent = '黑 ' + b + '% · 白 ' + w + '%';
         }
         
         function makeHumanMove(x, y) {
@@ -611,6 +542,7 @@
                 drawBoard();
                 updateStatus();
                 updateWinRate(Module._evaluateBoard());
+                renderKifu();
                 if (gameState === 'playing') {
                     // 如果是人机模式，轮到 AI 走
                     if (Module._getCurrentPlayer() === 2) {
@@ -686,6 +618,7 @@
                 updateStatus();
                 updateStats(depth, nodes, time);
                 updateWinRate(score);
+                renderKifu();
                 
                 // 如果是机机对战，继续
                 if (gameMode === 'ai-vs-ai' && gameState === 'playing') {
@@ -731,6 +664,7 @@
             updateStatus();
             updateStats(0, 0, 0);
             updateWinRate(0);
+            renderKifu();
             
             // 如果是机机对战，自动开始
             if (gameMode === 'ai-vs-ai') {
@@ -764,6 +698,7 @@
             gameState = 'playing';
             drawBoard();
             updateStatus();
+            renderKifu();
         }
         
         // ============= 事件监听 =============
@@ -872,7 +807,7 @@
             navigator.clipboard.writeText(record).then(() => {
                 const btn = document.getElementById('copy-record-btn');
                 const originalText = btn.textContent;
-                btn.textContent = '✓ 已复制!';
+                btn.textContent = '已复制';
                 btn.style.background = '#4CAF50';
                 setTimeout(() => {
                     btn.textContent = originalText;
@@ -889,7 +824,7 @@
                 
                 const btn = document.getElementById('copy-record-btn');
                 const originalText = btn.textContent;
-                btn.textContent = '✓ 已复制!';
+                btn.textContent = '已复制';
                 btn.style.background = '#4CAF50';
                 setTimeout(() => {
                     btn.textContent = originalText;
