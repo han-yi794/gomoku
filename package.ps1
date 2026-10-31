@@ -54,6 +54,11 @@ if ($html -notmatch '__engineReadyHook') {
 }
 Set-Content -Path (Join-Path $dist 'index.html') -Value $html -Encoding UTF8 -NoNewline
 
+# 自托管字体随包分发（页面里用相对路径 fonts/ 引用）。
+if (Test-Path (Join-Path $root 'fonts')) {
+    Copy-Item (Join-Path $root 'fonts') -Destination (Join-Path $dist 'fonts') -Recurse -Force
+}
+
 # Pages runs Jekyll by default; skip it so raw files are served as-is.
 Set-Content -Path (Join-Path $dist '.nojekyll') -Value '' -Encoding UTF8 -NoNewline
 
