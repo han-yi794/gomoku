@@ -248,7 +248,7 @@
 
     <script>
         // 构建号：发布须知——改这里时，必须把下方引擎脚本引用的 ?v= 参数一起改，两者保持一致。
-        window.__GOMOKU_BUILD__ = '20261031e';
+        window.__GOMOKU_BUILD__ = '20261031f';
         window.Module = window.Module || {};
 
         // 引擎就绪桥接。引擎异步实例化 WASM，缓存命中时它可能在本页面后续脚本
@@ -516,9 +516,11 @@
             list.scrollTop = list.scrollHeight;
         }
         
-        // 胜率：引擎评分在 ±WIN_THRESHOLD(1000万) 之间，线性映射到 [0,1]
-        function updateWinRate(score) {
-            var p = 0.5 + Number(score) / (2 * 10000000);
+        // 胜率：入参为「黑方视角」评分（±WIN_THRESHOLD=1000万 线性映射到 [0,1]）。
+        // 引擎评分一律是「走子方视角」：白方走子时的分要取反再进条，否则条会指向
+        // 反面——实测白方已被证杀（-999.98万）时旧实现会显示成「白 100%」。
+        function updateWinRate(scoreBlack) {
+            var p = 0.5 + Number(scoreBlack) / (2 * 10000000);
             if (p < 0) p = 0;
             if (p > 1) p = 1;
             var b = Math.round(p * 100);
@@ -541,7 +543,7 @@
                 moveHistory.push({ x, y, player, moveNum: moveHistory.length + 1 });
                 drawBoard();
                 updateStatus();
-                updateWinRate(Module._evaluateBoard());
+                updateWinRate(-Number(Module._evaluateBoard()));  // 落子后轮白走：评估为白方视角，取反成黑方视角
                 renderKifu();
                 if (gameState === 'playing') {
                     // 如果是人机模式，轮到 AI 走
@@ -617,7 +619,8 @@
                 drawBoard();
                 updateStatus();
                 updateStats(depth, nodes, time);
-                updateWinRate(score);
+                // 搜索分是走子方（AI）视角：换算成黑方视角再显示（AI 执白时取反）
+                updateWinRate(player === 1 ? Number(score) : -Number(score));
                 renderKifu();
                 
                 // 如果是机机对战，继续
