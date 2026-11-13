@@ -1520,6 +1520,7 @@ SearchResult findBestMove(Board& board) {
         int bestRawXInIter = -1, bestRawYInIter = -1;
         // 非必败候选中的最优（已证必败的着法不参与评选，避免加成掩盖败局）
         int64_t bestLiveScore = -INT64_MAX;
+        int64_t bestLiveRaw = 0;   // 同上候选的原始分（对外上报用：显示与选择分离）
         int bestLiveX = -1, bestLiveY = -1;
         bool foundLive = false;
 
@@ -1566,6 +1567,7 @@ SearchResult findBestMove(Board& board) {
             if (rawScore > LOSS_SCORE_CEIL) {
                 if (!foundLive || score > bestLiveScore) {
                     bestLiveScore = score;
+                    bestLiveRaw = rawScore;
                     bestLiveX = move.pos.x;
                     bestLiveY = move.pos.y;
                     foundLive = true;
@@ -1593,14 +1595,22 @@ SearchResult findBestMove(Board& board) {
             bestXInIter = -1;
             bestYInIter = -1;
         }
+        // 显示与选择分离：评选仍用含加成的分值，但对外上报「所选着法的原始分」——
+        // 防止 4000~5000 万级战术加成把败局显示成「大优」（实测 +1011.7 万的假胜率）。
+        int64_t reportScore = bestInIter;
+        if (bestRawInIter >= WIN_SCORE_FLOOR && bestRawXInIter >= 0) {
+            reportScore = bestRawInIter;
+        } else if (foundLive && bestLiveX >= 0) {
+            reportScore = bestLiveRaw;
+        }
         if (bestXInIter >= 0) {
-            bestScore = bestInIter;
+            bestScore = reportScore;
             bestRawScore = bestRawInIter;
             prevBestX = bestXInIter;
             prevBestY = bestYInIter;
             result.bestX = bestXInIter;
             result.bestY = bestYInIter;
-            result.bestScore = bestInIter;
+            result.bestScore = reportScore;
             result.searchDepth = depth;  // 只上报被采纳结论所在的深度
         }
         
