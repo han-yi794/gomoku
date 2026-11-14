@@ -23,7 +23,9 @@ C++17 + WebAssembly 的五子棋（连五子）游戏：浏览器直接人机对
 
 在线地址见上；或克隆本仓库后直接双击 `docs/index.html`（便携引擎，WASM 内嵌，免服务器）。
 
-### 从源码构建
+### 从源码构建（修改引擎时）
+
+> **克隆后可直接开发**：仓库已附带引擎构建产物（`build/`），克隆后无需安装 Emscripten 即可运行测试、打开开发版页面；只有改动 `src/` 引擎代码时才需要按下面步骤重新编译。
 
 需要 [Emscripten](https://emscripten.org/)（emsdk）：
 
@@ -56,6 +58,7 @@ node test_session_state.js     # 会话隔离：新局 / 悔棋不得串搜索�
 ```
 src/                     引擎源码（engine.cpp / engine.h / main.cpp 为 Emscripten 绑定）
 index.html               界面与前端逻辑（开发版，引用 build/）
+build/                   引擎构建产物（随仓库提交，克隆后即可开发 / 测试；由 build.ps1 重建）
 test_*.js                回归测试
 build.ps1 / package.ps1  构建与打包脚本
 fonts/                   自托管字体 IBM Plex Sans/Mono（OFL 1.1，见 fonts/OFL.txt）
@@ -169,6 +172,6 @@ docs/                    GitHub Pages 上线页（构建产物：页面 + 便携
 
 ## 许可证
 
-- 本项目源代码：**Apache License 2.0**（见 [LICENSE](LICENSE)）
+- 本项目源代码：**Apache License 2.0**，Copyright 2026 han-yi794（见 [LICENSE](LICENSE)）
 - 字体：[IBM Plex Sans / Mono](https://github.com/IBM/plex)，SIL Open Font License 1.1（见 fonts/OFL.txt）
 - 构建工具链：[Emscripten](https://emscripten.org/)（MIT / University of Illinois）

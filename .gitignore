@@ -1,5 +1,5 @@
-# 编译产物：由 build.ps1 / package.ps1 生成
-build/
+# build/ 内的引擎构建产物随仓库提交：克隆后无需 Emscripten 即可开发/测试
+# dist/ 为临时打包输出，不提交
 dist/
 
 # 调试残留

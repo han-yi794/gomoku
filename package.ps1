@@ -13,6 +13,9 @@ $ErrorActionPreference = 'Stop'
 # Emscripten 环境：优先用已设置的 EMSDK，否则回退到常见安装路径 D:\emsdk
 if (-not $env:EMSDK -and (Test-Path 'D:\emsdk\upstream\emscripten')) { $env:EMSDK = 'D:\emsdk' }
 if ($env:EMSDK) { $env:Path = "$env:EMSDK;$env:EMSDK\upstream\emscripten;$env:Path" }
+if (-not $env:EMSDK) {
+    Write-Host "提示：未检测到 Emscripten（EMSDK），无法生成便携包；请安装 emsdk 后设置 `$env:EMSDK。" -ForegroundColor Yellow
+}
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $dist = Join-Path $root 'dist'
