@@ -52,7 +52,8 @@ constexpr int WIN_THRESHOLD = 10000000;
 enum class Difficulty {
     EASY   = 0,  // depth 4-5
     MEDIUM = 1,  // depth 7-8
-    HARD   = 2   // depth 10-12
+    HARD   = 2,  // depth 10-12
+    LONG   = 3   // depth 16, 30s 预算（诊断/研究档，供关键局面深看）
 };
 
 // ============= 数据结构 =============

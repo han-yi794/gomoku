@@ -1502,8 +1502,10 @@ SearchResult findBestMove(Board& board) {
 
     // 迭代加深
     int64_t lastIterMs = 0;    // 上一层完整迭代的耗时（提前收手估算用）
-    int64_t prevIterEndMs = 0; // 上一层完成时刻
+    int64_t iterStartMs = 0;   // 本层迭代的开始时刻——逐层测真实耗时；旧实现把「搜索全程
+                               // 耗时」当成首层耗时，任何搜索前阶段变慢都会误触提前收手
     for (int depth = 1; depth <= g_maxDepth; depth++) {
+        iterStartMs = getElapsedMs();
         // 重新排序根层候选点（基于上一轮的结果）
         if (prevBestX >= 0) {
             for (size_t i = 0; i < rootCandidates.size(); i++) {
@@ -1594,6 +1596,15 @@ SearchResult findBestMove(Board& board) {
             // 留上一轮完整迭代的结果。
             bestXInIter = -1;
             bestYInIter = -1;
+        } else {
+            // 全证败（且本轮为完整扫描）：按将杀距离取「拖得最久」的一手——raw 越大 k 越大、
+            // 被将杀越晚；此前的「按加成评选」在败势里会凭位置分随机挑一种死法（实测白方
+            // 已必败后连走速败着法，黑方少花好几手）。
+            if (bestRawXInIter >= 0) {
+                bestXInIter = bestRawXInIter;
+                bestYInIter = bestRawYInIter;
+                bestInIter = bestRawInIter;
+            }
         }
 
         // 「全证败」抽查：损失带的结论必须由对手的威胁杀（VCF/VCT）核实——
@@ -1648,11 +1659,10 @@ SearchResult findBestMove(Board& board) {
             result.searchDepth = depth;  // 只上报被采纳结论所在的深度
         }
         
-        // 记录本层完整迭代的耗时（用于下面的提前收手估算）
+        // 记录本层完整迭代的真实耗时（用于下面的提前收手估算）
         {
             int64_t nowMs = getElapsedMs();
-            lastIterMs = (prevIterEndMs > 0) ? (nowMs - prevIterEndMs) : nowMs;
-            prevIterEndMs = nowMs;
+            lastIterMs = nowMs - iterStartMs;
         }
         
         // 检查时间
@@ -1748,6 +1758,11 @@ void setDifficulty(Difficulty level) {
             g_maxDepth = 16;
             g_timeBudgetMs = 10000;   // 2026-10-31 对局复核校准：10s 修复开局质量问题（实测白4 正确走 (9,5)），
                                       // 约为旧 30s 的 3 倍速（增量评估提速 ≈8~10 倍）
+            break;
+        case Difficulty::LONG:
+            g_maxDepth = 16;
+            g_timeBudgetMs = 30000;   // 2026-11 诊断档：实测 30s（深度 10-11）能在中盘看清 10s（深度 9）
+                                      // 完全看不到的败势（评分从 -592 摆到 -370 万，甚至直接证败）
             break;
     }
 }
