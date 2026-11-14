@@ -16,6 +16,7 @@ dist/
 Thumbs.db
 desktop.ini_b1030/
 _forensic/
+_dbg/
 _b1030/**
 
 _parked/

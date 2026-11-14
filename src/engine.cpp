@@ -1595,6 +1595,40 @@ SearchResult findBestMove(Board& board) {
             bestXInIter = -1;
             bestYInIter = -1;
         }
+
+        // 「全证败」抽查：损失带的结论必须由对手的威胁杀（VCF/VCT）核实——
+        // 实测偶层视界会把不输的局面误判成全证败（对 (7,6) 的搜索在深度 8/10
+        // 崩向损失带、深度 7/9 正常）。对排名前几的候选抽查：只要有一个对手
+        // 证不出杀，本轮损失结论不采信，保留上一轮结果；真败局面会被对手
+        // 杀核实，不受影响。
+        if (bestRawInIter <= LOSS_SCORE_CEIL && bestXInIter >= 0) {
+            const int64_t verifyDeadline = g_timeBudgetMs * 3 / 2;  // 抽查最多用到 1.5 倍预算
+            const bool savedTimedOut = g_timedOut;
+            bool anySurvivor = false;
+            int checkedTop = 0;
+            for (const auto& c : rootCandidates) {
+                if (checkedTop >= 2) break;
+                if (getElapsedMs() > verifyDeadline) break;
+                checkedTop++;
+                g_vcfNodes = 0;   // 抽查前必须清零：两个计数器是累计的，超上限后搜索会「零节点
+                g_vctNodes = 0;   // 即判超时」直接空转返回 false——实测把必败局误判成「对手证不出杀」
+                board.set(c.pos.x, c.pos.y, rootPlayer);
+                bool oppWin = vcfSearch(board, rootOpponent, rootPlayer,
+                                        VCF_DEFENSE_FOURS, verifyDeadline, nullptr, nullptr);
+                if (!oppWin) {
+                    oppWin = vctSearch(board, rootOpponent, rootPlayer,
+                                       VCT_MAX_MOVES, verifyDeadline, nullptr, nullptr);
+                }
+                board.set(c.pos.x, c.pos.y, EMPTY);
+                if (!oppWin) { anySurvivor = true; break; }
+            }
+            g_timedOut = savedTimedOut;   // 抽查不改变主搜索的超时状态
+            if (anySurvivor) {
+                bestXInIter = -1;
+                bestYInIter = -1;
+            }
+        }
+
         // 显示与选择分离：评选仍用含加成的分值，但对外上报「所选着法的原始分」——
         // 防止 4000~5000 万级战术加成把败局显示成「大优」（实测 +1011.7 万的假胜率）。
         int64_t reportScore = bestInIter;
