@@ -8,11 +8,11 @@
     <style>
         /* 方向：framed-sheet（边框 + 白纸面）。产品面孔：边框取棋盘材料色（暖纸），
            数据色只用唯一青绿（--accent）——最后一手标记与链接。字体自托管（OFL）。 */
-        @font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 400; font-display: swap; src: url('../fonts/ibmplexsans-400.woff2') format('woff2'); }
-        @font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 500; font-display: swap; src: url('../fonts/ibmplexsans-500.woff2') format('woff2'); }
-        @font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 600; font-display: swap; src: url('../fonts/ibmplexsans-600.woff2') format('woff2'); }
-        @font-face { font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 400; font-display: swap; src: url('../fonts/ibmplexmono-400.woff2') format('woff2'); }
-        @font-face { font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 500; font-display: swap; src: url('../fonts/ibmplexmono-500.woff2') format('woff2'); }
+        @font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 400; font-display: swap; src: url('fonts/ibmplexsans-400.woff2') format('woff2'); }
+        @font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 500; font-display: swap; src: url('fonts/ibmplexsans-500.woff2') format('woff2'); }
+        @font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 600; font-display: swap; src: url('fonts/ibmplexsans-600.woff2') format('woff2'); }
+        @font-face { font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 400; font-display: swap; src: url('fonts/ibmplexmono-400.woff2') format('woff2'); }
+        @font-face { font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 500; font-display: swap; src: url('fonts/ibmplexmono-500.woff2') format('woff2'); }
 
         :root {
             --ground: #f2f3f1;
@@ -221,6 +221,7 @@
                                 <option value="0">简单</option>
                                 <option value="1" selected>中等</option>
                                 <option value="2">困难</option>
+                                <option value="3">超长考</option>
                             </select>
                         </div>
                         <div class="control-group" id="speed-group" style="display:none;">
@@ -248,7 +249,7 @@
 
     <script>
         // 构建号：发布须知——改这里时，必须把下方引擎脚本引用的 ?v= 参数一起改，两者保持一致。
-        window.__GOMOKU_BUILD__ = '20261031f（引擎 10.18）';
+        window.__GOMOKU_BUILD__ = '20261114a';
         window.Module = window.Module || {};
 
         // 引擎就绪桥接。引擎异步实例化 WASM，缓存命中时它可能在本页面后续脚本
@@ -640,6 +641,7 @@
             const v = parseInt(document.getElementById('difficulty-select').value);
             if (v === 0) return '约 1 秒';
             if (v === 1) return '约 3 秒';
+            if (v === 2) return '约 10 秒，关键局面更久';
             return '约 30 秒，关键局面更久';
         }
         

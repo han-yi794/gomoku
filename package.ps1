@@ -10,8 +10,9 @@
 
 $ErrorActionPreference = 'Stop'
 
-$env:EMSDK = 'D:\emsdk'
-$env:Path = "D:\emsdk;D:\emsdk\upstream\emscripten;$env:Path"
+# Emscripten 环境：优先用已设置的 EMSDK，否则回退到常见安装路径 D:\emsdk
+if (-not $env:EMSDK -and (Test-Path 'D:\emsdk\upstream\emscripten')) { $env:EMSDK = 'D:\emsdk' }
+if ($env:EMSDK) { $env:Path = "$env:EMSDK;$env:EMSDK\upstream\emscripten;$env:Path" }
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $dist = Join-Path $root 'dist'
