@@ -4,6 +4,8 @@
 //     引擎不得报「损失带」结论。
 //  T2 真败保留：电池 m18 局面应为真证败，仍须落在损失带（防过度否决）。
 //  T3 信息项：黑 (9,5) 分支（存在活路 (8,9)）观察抽查效果（只打印，不判定）。
+//  T4 选定手核杀保护（2026-11-14 定档核验）：n15 局面 (4,6) 自评 +366 万、实为黑方
+//     1.7s 即证杀——引擎不得选它，收尾保护应换成评分序最靠前的幸存候选。
 const M = require('./build/gomoku.js');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -38,6 +40,14 @@ function playAndSearch(mv) {
   // T3: 信息项
   const t3 = playAndSearch(P10.concat([[9, 5]]));
   console.log('INFO: F2 (9,5)-branch -> whites=' + t3.whites + ' score=' + t3.score);
+
+  // T4: 选定手核杀保护
+  M._initGame();
+  M._setDifficultyLevel(2);
+  for (const m of MOVES_B.slice(0, 15)) M._playerMove(m[0], m[1]);
+  M._aiMove();
+  const t4score = Number(M._wasmGetLastSearchScore());
+  check(M._getCell(4, 6) !== 2, 'T4 must not walk into the probe-visible kill at n15 (4,6); score=' + t4score);
 
   console.log(failed === 0 ? 'All loss-claim tests passed.' : failed + ' loss-claim test(s) FAILED.');
   process.exit(failed === 0 ? 0 : 1);

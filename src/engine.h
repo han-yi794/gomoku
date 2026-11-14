@@ -71,6 +71,7 @@ struct Move {
     int player;
     int64_t score;  // 排序用缓存分数
     int64_t tactical_adjustment = 0;  // 根节点战术调整
+    int64_t lastRawScore = INT64_MIN; // 最近一次完整迭代的该候选原始搜索分（选定手核杀保护用）
 };
 
 // ============= 棋盘类 =============

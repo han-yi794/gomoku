@@ -1526,7 +1526,8 @@ SearchResult findBestMove(Board& board) {
         int bestLiveX = -1, bestLiveY = -1;
         bool foundLive = false;
 
-        for (const auto& move : rootCandidates) {
+        for (size_t ci = 0; ci < rootCandidates.size(); ++ci) {
+            const Move& move = rootCandidates[ci];
             // 落子并切换到对手回合
             int player = board.getPlayer();
             board.makeMove(move.pos.x, move.pos.y);
@@ -1555,6 +1556,8 @@ SearchResult findBestMove(Board& board) {
 
             // 超时后当前候选的结果不完整，不能覆盖已完成候选
             if (g_timedOut) break;
+
+            rootCandidates[ci].lastRawScore = rawScore;   // 供「选定手核杀保护」在收尾时换算候选分
 
             if (rawScore > bestRawInIter) {
                 bestRawInIter = rawScore;
@@ -1729,6 +1732,69 @@ SearchResult findBestMove(Board& board) {
             result.bestY = pickY;
         }
     }
+
+    // ===== 选定手核杀保护（2026-11-14） =====
+    // 深度搜索对「对手威胁搜索一眼可见的杀」存在盲区：20s 定档核验里 n15 局面自评
+    // +366 万的手 (4,6) 实为黑方 1.7s 即证杀；第 13 局 m12 同类（黑 43ms 证杀）。
+    // 收尾时对最终选定的一手做一次对手 VCF/VCT 核杀：证出杀、且存在幸存候选时，
+    // 换成「评分序最靠前的幸存候选」——幸存者的被杀深度在探针射程之外，方向保守。
+    // 低预算档（<8s）跳过：探针开销占比过大（500ms 级回归测试因此天然隔离）。
+    if (!g_inPostScan && result.bestX >= 0 && rootCandidates.size() >= 2 &&
+        g_timeBudgetMs >= 8000 && bestRawScore > LOSS_SCORE_CEIL) {
+        const int64_t pickDeadline = g_timeBudgetMs * 3 / 2;
+        const bool savedTimedOutP = g_timedOut;
+        const int savedVcfLimitP = g_vcfNodeLimit;
+        const int savedVctLimitP = g_vctNodeLimit;
+        g_vcfNodeLimit = 1500000;  // 收尾核杀：放宽节点上限（250k 实测会漏掉深链杀，
+        g_vctNodeLimit = 600000;   // 如 n15 需要 ~60 万节点级），总开销仍受期限约束
+        int pickIdx = -1;
+        for (size_t i = 0; i < rootCandidates.size(); i++) {
+            if (rootCandidates[i].pos.x == result.bestX && rootCandidates[i].pos.y == result.bestY) { pickIdx = (int)i; break; }
+        }
+        bool pickKilled = false;
+        if (pickIdx >= 0 && getElapsedMs() < pickDeadline) {
+            g_vcfNodes = 0; g_vctNodes = 0;
+            board.set(result.bestX, result.bestY, rootPlayer);
+            pickKilled = vcfSearch(board, rootOpponent, rootPlayer, VCF_DEFENSE_FOURS, pickDeadline, nullptr, nullptr);
+            if (!pickKilled) {
+                pickKilled = vctSearch(board, rootOpponent, rootPlayer, VCT_MAX_MOVES, pickDeadline, nullptr, nullptr);
+            }
+            board.set(result.bestX, result.bestY, EMPTY);
+        }
+        if (pickKilled) {
+            // 按最近一次完整迭代的原始分降序，找第一个对手证不出杀的候选
+            std::vector<std::pair<int64_t, int>> order;
+            order.reserve(rootCandidates.size());
+            for (size_t i = 0; i < rootCandidates.size(); i++) {
+                if ((int)i == pickIdx) continue;
+                order.emplace_back(rootCandidates[i].lastRawScore, (int)i);
+            }
+            std::stable_sort(order.begin(), order.end(),
+                [](const std::pair<int64_t, int>& a, const std::pair<int64_t, int>& b) { return a.first > b.first; });
+            int probed = 1;
+            for (const auto& ent : order) {
+                if (probed >= 8 || getElapsedMs() > pickDeadline) break;
+                const Move& c = rootCandidates[ent.second];
+                g_vcfNodes = 0; g_vctNodes = 0;
+                board.set(c.pos.x, c.pos.y, rootPlayer);
+                bool oppWin = vcfSearch(board, rootOpponent, rootPlayer, VCF_DEFENSE_FOURS, pickDeadline, nullptr, nullptr);
+                if (!oppWin) {
+                    oppWin = vctSearch(board, rootOpponent, rootPlayer, VCT_MAX_MOVES, pickDeadline, nullptr, nullptr);
+                }
+                board.set(c.pos.x, c.pos.y, EMPTY);
+                probed++;
+                if (!oppWin) {
+                    result.bestX = c.pos.x;
+                    result.bestY = c.pos.y;
+                    if (c.lastRawScore > INT64_MIN) result.bestScore = c.lastRawScore;
+                    break;
+                }
+            }
+        }
+        g_vcfNodeLimit = savedVcfLimitP;
+        g_vctNodeLimit = savedVctLimitP;
+        g_timedOut = savedTimedOutP;
+    }
     result.nodesVisited = g_nodesVisited;
     result.elapsedMs = getElapsedMs();
     result.timedOut = g_timedOut;
@@ -1756,8 +1822,10 @@ void setDifficulty(Difficulty level) {
             break;
         case Difficulty::HARD:
             g_maxDepth = 16;
-            g_timeBudgetMs = 10000;   // 2026-10-31 对局复核校准：10s 修复开局质量问题（实测白4 正确走 (9,5)），
-                                      // 约为旧 30s 的 3 倍速（增量评估提速 ≈8~10 倍）
+            g_timeBudgetMs = 20000;   // 2026-11-14 定档复核（15/20/25s 实验）：20s（深度 10）起
+                                      // 第 12 局关键堵点从「会输的一手」改为正确一手——是决策
+                                      // 改变点；完整败局可见（深度 11）需 25-30s，留给超长考。
+                                      // （旧注：2026-10-31 曾校准 10s 修复白4 质量问题）
             break;
         case Difficulty::LONG:
             g_maxDepth = 16;
