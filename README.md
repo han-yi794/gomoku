@@ -135,11 +135,11 @@ docs/                    GitHub Pages 上线页（构建产物：页面 + 便携
 
 | 函数 | 说明 |
 |------|------|
-| `getLastSearchDepth()` | 获取最后搜索深度 |
-| `getLastSearchNodes()` | 获取最后搜索节点数 |
-| `getLastSearchTimeMs()` | 获取最后搜索耗时 (ms) |
-| `getLastSearchScore()` | 获取最后搜索的根节点评分（走子方视角的原始终局分）；落在 `[-(WIN_THRESHOLD+999), -(WIN_THRESHOLD-999)]` 区间表示「所有着法均已证败」（该结论只在候选完整扫描后成立） |
-| `hasVcfWin()` | 当前局面轮走方是否存在「连续冲四」（VCF）必胜，供自检 / 分析使用 |
+| `wasmGetLastSearchDepth()` | 获取最后搜索深度 |
+| `wasmGetLastSearchNodes()` | 获取最后搜索节点数 |
+| `wasmGetLastSearchTimeMs()` | 获取最后搜索耗时 (ms) |
+| `wasmGetLastSearchScore()` | 获取最后搜索的根节点评分（走子方视角的原始终局分）；落在 `[-(WIN_THRESHOLD+999), -(WIN_THRESHOLD-999)]` 区间表示「所有着法均已证败」（该结论只在候选完整扫描后成立） |
+| `wasmHasVcfWin()` | 当前局面轮走方是否存在「连续冲四」（VCF）必胜，供自检 / 分析使用 |
 
 ## 性能
 
