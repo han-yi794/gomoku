@@ -1,5 +1,7 @@
 # 五子棋 AI（Gomoku AI）
 
+[![CI](https://github.com/han-yi794/gomoku/actions/workflows/ci.yml/badge.svg)](https://github.com/han-yi794/gomoku/actions/workflows/ci.yml)
+
 C++17 + WebAssembly 的五子棋（连五子）游戏：浏览器直接人机对战，核心是自研的 Alpha-Beta 搜索引擎。
 
 **在线试玩：** https://han-yi794.github.io/gomoku/ —— 最新引擎；`/v1030/`、`/v1018/` 分别可试玩 10.30 与 10.18 的引擎，对比三个年代的棋力。
@@ -50,6 +52,8 @@ node test_diagonal_defense.js  # 威胁防守 / 败局上报等 19 项行为回�
 node test_loss_claims.js       # 「全证败」抽查回归：假证败必须被拒、真败必须保留
 node test_session_state.js     # 会话隔离：新局 / 悔棋不得串搜索表
 ```
+
+以上 4 套在每次 push / PR 时由 GitHub Actions 自动跑（`.github/workflows/ci.yml`，全部 exit 0 才算绿）。
 
 测试直接加载 `build\gomoku.js`，请先运行 `build.ps1`。
 

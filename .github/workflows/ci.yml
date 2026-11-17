@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # 快速套件：引擎基础 / 会话隔离 / 全证败抽查（全部 exit 0 才算绿）
+  test-fast:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Engine basics
+        run: node test_engine.js
+      - name: Session isolation
+        run: node test_session_state.js
+      - name: All-lost verification sampling
+        run: node test_loss_claims.js
+        # 上述任一步骤非零退出即任务失败（assert 失败会抛异常退出 1；
+        # test_loss_claims 显式 process.exit(1)）
+
+  # 发布底线：19 项行为回归（困难档预算满，耗时最长）
+  test-regression:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Diagonal defense regression (19 items)
+        run: node test_diagonal_defense.js
+        # 断言失败即抛异常退出 1；全过才继续（发布底线）

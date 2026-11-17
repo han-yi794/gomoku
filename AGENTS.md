@@ -23,6 +23,7 @@
   - `node test_diagonal_defense.js`（19 项行为回归 = 发布底线；20s 档下约 10 分钟级）
   - `node test_loss_claims.js`（「全证败」抽查 T1/T2/T4 + 信息项；约 2 分钟）
   - `node test_session_state.js`（会话隔离）
+  - CI：每次 push / PR 自动跑以上 4 套（`.github/workflows/ci.yml`，test-fast + test-regression 两个 job）
 
 ## 发布流程（GitHub Pages）
 
