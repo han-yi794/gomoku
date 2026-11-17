@@ -39,7 +39,7 @@ setTimeout(() => {
     blackResult = Module._playerMove(x, y);
 
     if (i < blackMoves.length - 1 && blackResult === 0) {
-      const before = snapshotBoard();
+      const before = boardSnapshot();
       Module._aiMove();
       const aiMove = changedCell(before);
       assert(aiMove, `AI move ${i + 1} should change exactly one board cell`);
@@ -424,7 +424,3 @@ setTimeout(() => {
   );
   console.log('PASS: midgame concession honestly reported (game 2, lost at ~ply 30)');
 }, 1000);
-
-function snapshotBoard() {
-  return boardSnapshot();
-}
