@@ -586,6 +586,10 @@ static constexpr int64_t WIN_SCORE_FLOOR = WIN_THRESHOLD - 1 - MATE_MAX_PLY * MA
 static constexpr int64_t LOSS_SCORE_CEIL = -WIN_SCORE_FLOOR;
 static constexpr int64_t TERMINAL_TIE = 3;   // 终局分只允许这么点的 tie-break
 static constexpr int POST_SCAN_MIN_BUDGET = 4000;     // 复核要求的最低时间预算（低难度复核太浅，直接跳过）
+static constexpr int VCT_FILTER_MIN_BUDGET = 4000;    // b1-B：VCT 防守补枪的最低预算（探针开销占比过大，低档跳过）
+static constexpr int VCT_FILTER_NODE_LIMIT = 300000;  // b1-B：补枪探针的节点上限（原 60 万 ≈1.2-1.7s/候选，
+                                                      // 实测 game12-m13 两个幸存者烧 3s 把主搜索从深度 10 压到 9
+                                                      // 且零收获；30 万 ≈0.6s/候选，保留能力、砍半成本）
 // 根节点战术加成限幅：不得把分数线推离搜索语义（未限幅时实测可达 ±4800 万，盖过搜索结论）
 static constexpr int64_t MAX_TACTICAL_ADJUST = 10000000;
 static constexpr size_t POST_SCAN_MAX_FINALISTS = 5;  // 决赛候选数超过这个就不复核
@@ -1094,6 +1098,10 @@ static constexpr int VCT_MAX_THREAT_MOVES = 16;  // 单节点最多枚举的威�
 static constexpr int VCT_MAX_DEF_REPLIES = 16;   // 单节点最多枚举的应手（超出即放弃）
 static int g_vctNodes = 0;
 static int g_vctNodeLimit = 600000;   // 上限与时间期限双保险：实测 45 万节点 ~0.85s
+// 证明节点的剩余威胁手数——「杀距比较」的距离来源（b1-B）。
+// 只在「本节点检测到必胜」处赋值（链式/递归证明由更深的节点记录，父节点不覆写）；
+// 换算：攻方强制手数 = VCT_MAX_MOVES - 该值 + 1。
+static int g_vctWinMovesLeft = 0;
 
 // 注意：VCT 只用于「进攻」（找到自己的必胜线索立即走）。
 // 不做防守剔除——实测它会把必败局面里「挡一手拖延」的着法也一并剔掉，
@@ -1187,6 +1195,7 @@ static bool vctSearch(Board& b, int attacker, int defender, int movesLeft,
                     *rootX = e->bestMove % BOARD_SIZE;
                     *rootY = e->bestMove / BOARD_SIZE;
                 }
+                g_vctWinMovesLeft = e->depth;   // 复用证明：距离取立此结论时的手数
                 return true;
             }
         } else if (movesLeft <= e->depth) {
@@ -1200,6 +1209,7 @@ static bool vctSearch(Board& b, int attacker, int defender, int movesLeft,
         VcfPoint p;
         if (vcfCountImmediateFives(b, attacker, &p) > 0) {
             if (rootX) { *rootX = p.x; *rootY = p.y; }
+            g_vctWinMovesLeft = movesLeft;      // 一手成五：距离本节点
             threatTtStore(th, ttDepth, true, p.x, p.y);
             return true;
         }
@@ -1259,12 +1269,14 @@ static bool vctSearch(Board& b, int attacker, int defender, int movesLeft,
             if (five) {                                  // 直接成五
                 b.set(x, y, EMPTY);
                 if (rootX) { *rootX = x; *rootY = y; }
+                g_vctWinMovesLeft = movesLeft;      // 一手成五：距离本节点
                 threatTtStore(th, ttDepth, true, x, y);
                 return true;
             }
             if (n >= 2) {                                // 活四 / 双四
                 b.set(x, y, EMPTY);
                 if (rootX) { *rootX = x; *rootY = y; }
+                g_vctWinMovesLeft = movesLeft;      // 活四即必胜：距离本节点
                 threatTtStore(th, ttDepth, true, x, y);
                 return true;
             }
@@ -1314,6 +1326,7 @@ static bool vctSearch(Board& b, int attacker, int defender, int movesLeft,
             if (rc == 0) {                // 拆不掉 -> 必胜
                 b.set(x, y, EMPTY);
                 if (rootX) { *rootX = x; *rootY = y; }
+                g_vctWinMovesLeft = movesLeft;      // 三威胁无解：距离本节点
                 threatTtStore(th, ttDepth, true, x, y);
                 return true;
             }
@@ -1333,6 +1346,45 @@ static bool vctSearch(Board& b, int attacker, int defender, int movesLeft,
 
     threatTtStore(th, ttDepth, false, -1, -1);
     return false;
+}
+
+// ============= 杀距换算（b1-B） =============
+//
+// 「杀距比较」需要一个跨探针可比的距离度量。约定：换算成**与引擎败带同口径的
+// mateLossScore(k) 分值**（k=ply）——距离编码进分值，比较即分值比较，且与深搜
+// 自己的将杀距离原始分同尺度。设计借鉴 Rapfi（dotb1ue/rapfi，search/ab/search.cpp）：
+// 其 mated_in/mate_in 直接用分值编码将杀距离并参与 alpha/beta 剪枝，VCF 防守侧
+// 不做任何特殊「拖延」逻辑——拖延由 mate 分值的自然序产生。
+//
+// VCF：g_vcfWinFours = VCF_MAX_FOURS - foursLeft + 1，其中 foursLeft 是探针的
+//      剩余预算。防守探针以 VCF_DEFENSE_FOURS 起步（进攻以 VCF_MAX_FOURS 起步），
+//      换算回本探针实际冲四手数要减掉这个固定偏移：
+//      foursUsed = g_vcfWinFours - (VCF_MAX_FOURS - initialFours)。
+// VCT：g_vctWinMovesLeft 是必胜证明节点的剩余威胁手数，
+//      attackerMoves = VCT_MAX_MOVES - 该值 + 1。
+// ply ≈ 2*攻方强制手数 - 1（每手强制着法之间夹一手被迫应招，最后一手成五）。
+//
+// 注意（度量语义）：这是「证明长度」的下界排名度量，不是精确将杀手数——活四/
+// 拆不掉类证明在手数上偏小（完成五的那手不计入递归深度）。用途是败势下「谁死得
+// 慢」的候选排序；精确将杀距离仍由深搜 loss-band 原始分提供（次席信号）。
+// 0 = 未被探针证杀（射程之外）——排名上高于任何有界证明（对手至少需要超出射程
+// 的努力，拖延期望更长）。
+
+static inline int64_t killValueFromMoves(int attackerMoves) {
+    const int plies = attackerMoves > 0 ? 2 * attackerMoves - 1 : 1;
+    // 防越界：证明长度超过 MATE_MAX_PLY 时封顶（败带只编码到 k=MATE_MAX_PLY）
+    const int64_t k = std::min<int64_t>(plies, MATE_MAX_PLY);
+    return mateLossScore(k);
+}
+
+static inline int64_t vcfKillValue(int initialFours) {
+    const int foursUsed = g_vcfWinFours - (VCF_MAX_FOURS - initialFours);
+    return killValueFromMoves(foursUsed);
+}
+
+static inline int64_t vctKillValue() {
+    const int attackerMoves = VCT_MAX_MOVES - g_vctWinMovesLeft + 1;
+    return killValueFromMoves(attackerMoves);
 }
 
 // ============= 迭代加深搜索 =============
@@ -1477,9 +1529,24 @@ SearchResult findBestMove(Board& board) {
     }
 
     // 2) 防守：排除「走完之后对手能连续冲四取胜」的候选（除非全部如此）
+    //    b1-B（2026-11-18）两部分：
+    //    a) VCF 之后对 VCF 幸存候选补 VCT 核杀（「三」施压型连续威胁——VCF 证明
+    //       不了、深搜又容易看漏的深链杀）。只补幸存者：实测 24 个根候选里 22 个
+    //       被 VCF 秒杀（每个 4 节点），幸存者通常 0-3 个，成本可控（旧的全候选
+    //       VCT 实现实测吃掉 3-4.5s 加深时间，已废弃）。
+    //    b) 杀距记录：全程记录每个被证杀候选的探针杀距（ply）。**全部证杀时一个
+    //       都不删**（败势里删掉的可能就是拖得最久的着法）——杀距交给迭代加深后的
+    //       「拖最久」选择做杀距比较。
+    //    成本控制：VCF+VCT 合计硬顶 45% 预算；补枪节点上限 30 万（≈0.6s/候选）；
+    //    低预算档（<4s）跳过 VCT，500ms 级回归测试天然隔离。
+    struct KillDist { int x, y; int64_t value; };   // value = mate 败带分（0=未被证杀）
+    std::vector<KillDist> killDist;
+    killDist.reserve(rootCandidates.size());
     {
         g_vcfNodes = 0;
-        const int64_t vcfDeadline = g_timeBudgetMs * 3 / 10;  // 本阶段最多占 30%
+        g_vctNodes = 0;
+        const int64_t vcfDeadline = g_timeBudgetMs * 3 / 10;   // VCF 阶段最多占 30%
+        const int64_t vctDeadline = g_timeBudgetMs * 45 / 100; // VCF+VCT 合计最多占 45%
         std::vector<Move> safe;
         safe.reserve(rootCandidates.size());
         int banned = 0;
@@ -1492,12 +1559,47 @@ SearchResult findBestMove(Board& board) {
             bool oppWin = vcfSearch(board, rootOpponent, rootPlayer, VCF_DEFENSE_FOURS,
                                     vcfDeadline, nullptr, nullptr);
             board.set(c.pos.x, c.pos.y, EMPTY);
-            if (oppWin) banned++;
-            else safe.push_back(c);
+            if (oppWin) {
+                banned++;
+                killDist.push_back({c.pos.x, c.pos.y, vcfKillValue(VCF_DEFENSE_FOURS)});
+            } else {
+                safe.push_back(c);
+            }
         }
+
+        // VCF 幸存者补 VCT 核杀（「三」施压型连续威胁杀）
+        if (!safe.empty() && g_timeBudgetMs >= VCT_FILTER_MIN_BUDGET) {
+            std::vector<Move> stillSafe;
+            stillSafe.reserve(safe.size());
+            for (const auto& c : safe) {
+                if (getElapsedMs() > vctDeadline) {   // 超时不再剔除，交给主搜索
+                    stillSafe.push_back(c);
+                    continue;
+                }
+                g_vcfNodes = 0;   // 契约 4：两个计数器是累计的，每次探针前必须清零
+                g_vctNodes = 0;
+                const int savedVctLimit = g_vctNodeLimit;
+                g_vctNodeLimit = VCT_FILTER_NODE_LIMIT;   // 补枪档：收紧节点上限保主搜索深度
+                board.set(c.pos.x, c.pos.y, rootPlayer);
+                bool oppWin = vctSearch(board, rootOpponent, rootPlayer, VCT_MAX_MOVES,
+                                        vctDeadline, nullptr, nullptr);
+                board.set(c.pos.x, c.pos.y, EMPTY);
+                g_vctNodeLimit = savedVctLimit;
+                if (oppWin) {
+                    banned++;
+                    killDist.push_back({c.pos.x, c.pos.y, vctKillValue()});
+                } else {
+                    stillSafe.push_back(c);
+                }
+            }
+            if (banned > 0) safe.swap(stillSafe);
+        }
+
         if (banned > 0 && !safe.empty()) {
             rootCandidates.swap(safe);
         }
+        // banned > 0 但 safe 为空 = 全部候选都被探针证杀：不动候选集，killDist 已在
+        // 上面记齐，供全证败分支做杀距比较。
     }
 
     // 迭代加深
@@ -1600,10 +1702,39 @@ SearchResult findBestMove(Board& board) {
             bestXInIter = -1;
             bestYInIter = -1;
         } else {
-            // 全证败（且本轮为完整扫描）：按将杀距离取「拖得最久」的一手——raw 越大 k 越大、
-            // 被将杀越晚；此前的「按加成评选」在败势里会凭位置分随机挑一种死法（实测白方
+            // 全证败（且本轮为完整扫描）：按「杀距比较」取「拖得最久」的一手。
+            // b1-B（2026-11-18）起排名规则（分值为 mate 败带口径，k=ply）：
+            //   1) 探针杀距分值（killDist）——探针证明过的杀是「对手最快能杀」的硬
+            //      证据；未被证杀的候选（分值 0）排位高于任何有界证明——对手至少需要
+            //      超出探针射程的努力，拖延期望更长；已证杀之间分值越大杀得越晚。
+            //   2) 深搜将杀距离原始分（raw 越大 k 越大、被将杀越晚）次席。
+            // 此前的实现只按原始分评选，在败势里会凭位置分随机挑一种死法（实测白方
             // 已必败后连走速败着法，黑方少花好几手）。
-            if (bestRawXInIter >= 0) {
+            int pickX = -1, pickY = -1;
+            int64_t pickKill = 1;        // 杀距分值；0 = 未被证杀（高于任何有界证明）
+            int64_t pickRaw = -INT64_MAX;
+            for (const auto& c : rootCandidates) {
+                int64_t killValue = 0;   // 默认：本候选未被探针证杀
+                for (const auto& kd : killDist) {
+                    if (kd.x == c.pos.x && kd.y == c.pos.y) { killValue = kd.value; break; }
+                }
+                const int64_t raw = (c.lastRawScore > INT64_MIN) ? c.lastRawScore : -INT64_MAX;
+                // 排名：未被证杀(0) > 已证杀且更晚（分值更大）> 同分值比深搜原始分
+                const bool better = pickX < 0
+                    || killValue > pickKill
+                    || (killValue == pickKill && raw > pickRaw);
+                if (better) {
+                    pickKill = killValue;
+                    pickRaw = raw;
+                    pickX = c.pos.x;
+                    pickY = c.pos.y;
+                }
+            }
+            if (pickX >= 0) {
+                bestXInIter = pickX;
+                bestYInIter = pickY;
+                bestInIter = pickRaw;   // 对外上报原始分（显示与选择分离）
+            } else if (bestRawXInIter >= 0) {
                 bestXInIter = bestRawXInIter;
                 bestYInIter = bestRawYInIter;
                 bestInIter = bestRawInIter;
