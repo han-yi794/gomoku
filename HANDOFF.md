@@ -19,9 +19,10 @@
 
 ## 待办（按优先级）
 
-1. **发布 b1-B 到 Pages**（用户确认后）：`package.ps1` → 同步 `dist\` → `docs\`，构建号已 20261118a，按 AGENTS.md 发布流程重生成 v1030/v1018 子版本页标签并推送
-2. **② 引擎下一迭代（b1-B 之后的选项）**：搜索效率（同等时间更深；可研究 Rapfi 的 mate distance pruning——`beta=min(mate_in(ply+1))` 直接用分值限界，本仓库借鉴了其 mate-in-value 编码但未引入该剪枝）；VCT 补枪的实证收益（当前 fixtures 里零拒绝记录，成本已压到 0.6s/候选；需要能证出幸存者深链杀的靶局面）；NNUE 预研 spike（本机 Python 3.13；小数据自战→小网络→对现引擎打分；换评估需重标定全部夹具）；多线程（最后做，先做本机原生 CLI 版）
-3. **换工具链重建 build/ + docs/**：本会话已用 emsdk 7.0.0 重建并提交 `build/`（随 b1-B 改动），夹具全绿——已结项
+1. **NNUE Spike 执行**（方案已定稿于 AGENTS.md「NNUE 预研」）：native CLI `dump` 命令（selfplay 特征+评分数据）→ numpy 训练极小 FC → int8 量化权重 → `evaluatePosition` flag 分支 → 同时限匹配赛判定。默认关闭、古典兜底，跑通全链后再评估投入
+2. **b1-B 之后的引擎选项**：搜索效率（Rapfi 的 mate distance pruning——分值限界，已借鉴其 mate-in-value 编码未引剪枝）；VCT 补枪实证收益（当前零拒绝记录，需深链杀靶局面）；game12-m13 深度边界的逐层 instrumentation（MT 重构后 wasm 在该点 21k vs 旧 44k 节点/s，着法未变、原因待查——跨编译器节点数逐位相同证明无逻辑回归）
+3. ~~多线程~~：已落地（2026-11-19，保守 SMP + 原生 CLI，详见 AGENTS.md 契约 #11）
+4. ~~发布 b1-B 到 Pages~~：已完成（build 20261118a 线上，SHA256 核对一致）
 2. **换工具链重建 build/ + docs/**（刻意未做）：本机 emsdk 7.0.0 与旧机构建产物不同源。本会话特意保留仓库内 20261114b 产物不动（`package.ps1` 只写 dist/）。若某次引擎改动需要重建，build.ps1 重编后**必须重跑 4 套 + 夹具基线**再提交产物
 3. **浏览器冒烟缺口**：本机无 Chrome（仅 Edge；playwright MCP 只要真 Chrome，未提权装不了）。AGENTS.md 发布流程里的「真浏览器冒烟」目前只有 node 层 + 静态核对替代——装 Chrome 后补冒烟（对以后的 UI 改动也是刚需）
 4. 用户会持续丢实战棋谱（困难 20s / 超长考）→ 按 AGENTS.md 的取证流程复盘

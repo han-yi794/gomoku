@@ -87,3 +87,14 @@
 - 修改引擎的硬流程：先测量（夹具/取证）→ 改动 → 全绿（4 套测试 + 电池 + 相关棋局夹具）→ 才发布。「**不劣于旧**」是硬门槛：夹具变化要逐项做对手侧核验（黑方深搜对比），必要时更新夹具并在提交信息里说明理由。
 - 回滚/大改前先总结现状、等用户确认（除非用户明确说"做"）。
 - 提交信息保持本仓库风格：**详述动机与实测数据**（面向以后复盘）。
+
+## NNUE 预研（2026-11-20 开局，GitHub 参考研究结论）
+
+- **参考**：D:\refs\rapfi（dotb1ue/rapfi，GPL-3.0）生产级 mix10 NNUE（64 维形状特征 + 9 点深度卷积 + 策略/价值双头、int16/int8 量化、增量累加器、与古典评估 blend + 分段线性读出）；训练器独立子项目 dhbloo/pytorch-nnue-trainer（PyTorch/accelerate、EMA、katago-numpy/packed-binary 数据集、导出带标准头 magic/arch_hash/rule_mask/boardsize_mask 的 lz4 二进制）。Stockfish NNUE 集成模式（特征变换器 + 增量累加器 + 叶端评估替换 + 搜索分蒸馏）为通用范式；zhongjn/gomokuer 是 MCTS+CNN 的另一路线（不采用）。
+- **本仓库 Spike（逐级可证伪，默认关闭）**：
+  1. 数据：native CLI 加 dump 命令——selfplay 每步输出（局面特征, 引擎搜评分），Stockfish 式蒸馏标签；
+  2. 特征 v0：复用现有 pattern 检测——双方各 pattern 类型 × 三区（中心/中腹/边），约 42-48 维 + 手数/先手；
+  3. 网络：FC 48→32(ReLU)→16(ReLU)→1，int8 量化推理，权重带标准头二进制落 native/nnue/；
+  4. 训练：Python 3.13；网络极小先用纯 numpy SGD（不引 PyTorch），跑通再迁 PyTorch CPU；
+  5. 集成：evaluatePosition 加 NNUE 分支（flag 控制），古典默认；native CLI 匹配赛（同时限古典 vs NNUE）判定；
+  6. 纪律：换评估=重标定全部夹具（硬规矩）；发布前必须「不劣于旧」；夹具漂移逐项对手侧核验。
