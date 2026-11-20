@@ -191,6 +191,15 @@ int getTimeBudgetMs();
 // AI 主入口
 SearchResult findBestMove(Board& board);
 
+// AI 并行入口（lazy SMP；仅原生构建有效，wasm 下沉到单线程）
+// 每线程一份私有 SearchContext（威胁 TT/计数器独立）+ Board 副本，共享无锁主 TT；
+// 合并规则：分高 > 深度深 > 节点多 > 主线(0) 优先。numThreads<=1 时等同 findBestMove。
+SearchResult findBestMoveParallel(Board& board, int numThreads);
+
+// 上一次并行搜索的合并决策：0 = 参照线程（线程 0）胜出；否则 = 线程数*100 + 贡献
+// 「严格更优」结果的辅助线程 id。供并行质量测量（辅助线程增益率）。
+int getParallelMergeInfo();
+
 // ============= 调试 =============
 int64_t getNodesVisited();
 void resetStats();

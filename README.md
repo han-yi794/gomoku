@@ -55,6 +55,22 @@ node test_session_state.js     # 会话隔离：新局 / 悔棋不得串搜索�
 
 以上 4 套在每次 push / PR 时由 GitHub Actions 自动跑（`.github/workflows/ci.yml`，全部 exit 0 才算绿）。
 
+### 多线程（原生 CLI）
+
+浏览器 WASM 暂不支持多线程（GitHub Pages 无法设置 COOP/COEP、便携 `file://` 版亦无 SharedArrayBuffer），多线程研究在本机原生 CLI 上进行：
+
+```powershell
+# 首次：便携 MinGW-w64 解压到 D:\mingw（见 AGENTS.md），之后：
+pwsh -ExecutionPolicy Bypass -File native\build_native.ps1
+
+.\native\gomoku_cli.exe bench 1        # 单线程夹具基线（9/9 为准入）
+.\native\gomoku_cli.exe bench 4        # 4 线程对照（不得劣于 bench 1）
+.\native\gomoku_cli.exe nps 1 20000    # 节点吞吐
+.\native\gomoku_cli.exe search 7,7 7,8 8,6 ...   # 任意局面搜索
+```
+
+架构为**保守 SMP**：线程 0（参照线程，独立 TT）结果与单线程逐位一致；辅助线程共享另一张 TT，其结论只有「严格更优」（分高 / 同分更深）才被采纳——并行结果构造性 ≥ 单线程。实测（本机 4 核，20s 档）：`bench 1` 与 `bench 4` 均 9/9；`game12-m13` 上辅助线程贡献过严格更优（合并信息 `merge=401`）。注意：4 线程跑满时代理进程本身也占核，每线程有效预算会缩水（计时边界型夹具如 `game11-m8` 可能掉一档深度，属已记录的持平局范畴）。
+
 测试直接加载 `build\gomoku.js`，请先运行 `build.ps1`。
 
 ## 项目结构

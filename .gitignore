@@ -22,3 +22,6 @@ _forensic/
 _dbg/
 _parked/
 .taste-skill/
+
+# 原生 CLI 构建产物（源码 native/ 入库，exe 本地构建）
+native/gomoku_cli.exe

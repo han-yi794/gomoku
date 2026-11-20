@@ -3,44 +3,43 @@
 // 参考: algorithms.md 调研文档
 
 #include "engine.h"
+#include <atomic>
 #include <cstdio>
 #include <cmath>
 #include <cstdlib>
 
 // ============= 全局状态 =============
 
-static int64_t g_nodesVisited = 0;
+// ============= 全局状态 =============
+// 搜索配置：搜索期间只读，跨线程共享（setDifficulty/setTimeBudget 在搜索之外设置）
 static int64_t g_timeBudgetMs = 3000;
 static int g_maxDepth = 8;  // 默认搜索深度
-static bool g_timedOut = false;
-static std::chrono::steady_clock::time_point g_searchStartTime;
-
-// 最后一次搜索的统计
-static int g_lastSearchDepth = 0;
-static int64_t g_lastSearchNodes = 0;
-static int64_t g_lastSearchTimeMs = 0;
-static int64_t g_lastSearchScore = 0;
+//
+// 多线程（2026-11-19）：其余可变状态收进 SearchContext（定义见 VCT 节之后），
+// 经 thread_local 当前上下文 ctx() 访问。单线程/wasm 路径始终用默认实例，行为与
+// 旧实现逐位一致；原生 CLI 并行搜索每线程一份私有上下文，共享无锁主 TT、各带
+// 私有威胁 TT。zobrist 表只读共享（call_once 式惰性初始化）。
 
 // ============= Zobrist 哈希 =============
 
 static uint64_t zobrist[BOARD_SIZE][BOARD_SIZE][3];  // [x][y][player+1]
-static bool g_zobristInitialized = false;
 
 static void initZobrist() {
-    if (g_zobristInitialized) return;
-    // 使用 LCG 生成伪随机数（可重现）
-    uint64_t state = 0x123456789ABCDEF0ULL;
-    for (int y = 0; y < BOARD_SIZE; y++) {
-        for (int x = 0; x < BOARD_SIZE; x++) {
-            for (int p = 0; p < 3; p++) {
-                state = state * 6364136223846793005ULL + 1442695040888963407ULL;
-                zobrist[x][y][p] = state;
+    // C++11 函数局部静态量的初始化是线程安全的——多线程首搜并发调用也只会填一次
+    static const bool initialized = []() {
+        uint64_t state = 0x123456789ABCDEF0ULL;
+        for (int y = 0; y < BOARD_SIZE; y++) {
+            for (int x = 0; x < BOARD_SIZE; x++) {
+                for (int pp = 0; pp < 3; pp++) {
+                    state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+                    zobrist[x][y][pp] = state;
+                }
             }
         }
-    }
-    g_zobristInitialized = true;
+        return true;
+    }();
+    (void)initialized;
 }
-
 static uint64_t computeHash(const Board& board) {
     initZobrist();
     uint64_t hash = 0;
@@ -57,65 +56,153 @@ static uint64_t computeHash(const Board& board) {
 
 // ============= 置换表 =============
 
+// ============= 置换表 =============
+//
+// 无锁 TTEntry（主 TT 多线程共享写安全；借 Rapfi/Stockfish 的 Xor 键校验）：
+//   word1 = 打包数据先写，word0 = hash ^ data 后写；读方校验 (word0 ^ word1) == hash
+//   才认账。任何写一半的中间态过不了校验、按 miss 处理，无需加锁。
+// 语义注意：这不是事务——旧条目可能被「整体替换过程中的半新状态」淘汰，但半新
+// 状态一律被拒，不会把脏数据当命中；同位置重写由深度/替换策略自然收敛。
 struct TTEntry {
-    uint64_t hash;
-    int8_t depth;
-    int32_t score;
-    uint8_t flag;  // 0=exact, 1=lower, 2=upper
-    int16_t bestMove;  // 编码为 y*15+x
-    int16_t padding;
+    std::atomic<uint64_t> word0;   // hash ^ data（校验字，后写）
+    std::atomic<uint64_t> word1;   // 打包负载（先写）
 };
 
-static constexpr int TT_SIZE = 1 << 20;  // 1M entries
-static TTEntry g_tt[TT_SIZE];
-
-static inline int ttIndex(uint64_t hash) {
-    return (hash & (TT_SIZE - 1));
+// data 打包（小端）：score(int32, 0-31) | depth(uint8, 32-39) | flag(uint8, 40-47) | bestMove(int16, 48-63)
+static inline uint64_t ttPackData(int32_t score, int depth, int flag, int bestMove) {
+    return (uint64_t)(uint32_t)score
+         | ((uint64_t)(uint8_t)(depth < 0 ? 0 : depth) << 32)
+         | ((uint64_t)(uint8_t)flag << 40)
+         | ((uint64_t)(uint16_t)bestMove << 48);
 }
+static inline int32_t ttScoreOf(uint64_t data)   { return (int32_t)(uint32_t)(data & 0xFFFFFFFFULL); }
+static inline int     ttDepthOf(uint64_t data)   { return (int)((data >> 32) & 0xFF); }
+static inline int     ttFlagOf(uint64_t data)    { return (int)((data >> 40) & 0xFF); }
+static inline int     ttBestMoveOf(uint64_t data){ return (int16_t)(uint16_t)((data >> 48) & 0xFFFF); }
+
+static constexpr int TT_SIZE = 1 << 20;  // 1M entries
+static TTEntry g_ttStorage[TT_SIZE];     // 主置换表存储（默认上下文；条目无锁）
+#ifndef __EMSCRIPTEN__
+static TTEntry g_ttRefStorage[TT_SIZE];  // 并行参照线程（线程 0）专用主 TT
+static TTEntry g_ttSmpStorage[TT_SIZE];  // 并行辅助线程共享主 TT
+static int g_parallelMergeInfo = 0;      // 合并决策供测量记录（0=参照线程胜出）
+
+int getParallelMergeInfo() { return g_parallelMergeInfo; }
+#endif
+
+struct ThreatTTEntry {
+    uint64_t hash;
+    int8_t depth;      // 立此结论时还剩多少手威胁
+    uint8_t result;    // 0=未证必胜, 1=已证必胜
+    int16_t bestMove;  // y*15+x，必胜时的第一手
+};
+
+static constexpr int THREAT_TT_SIZE = 1 << 18;
+static ThreatTTEntry g_threatTTStorage[THREAT_TT_SIZE];  // 默认上下文（单线程）的私有实例
+
+// ============= 搜索上下文（多线程状态容器） =============
+//
+// 单线程/wasm：全局唯一默认实例（上面的两个存储），行为与旧实现一致。
+// 原生 CLI 并行：每线程一个实例——主 TT 指针共享（条目无锁）、威胁 TT 私有
+// （探测计数器、时限标志、节点上限等逐线程独立，互不干扰）。
+struct SearchContext {
+    TTEntry* tt;                       // 主置换表（多线程共享；条目无锁）
+    ThreatTTEntry* threatTT;           // 威胁搜索置换表（私有）
+    int64_t nodesVisited = 0;
+    bool timedOut = false;
+    std::chrono::steady_clock::time_point searchStartTime;
+    // 最后一次搜索的统计
+    int lastSearchDepth = 0;
+    int64_t lastSearchNodes = 0;
+    int64_t lastSearchTimeMs = 0;
+    int64_t lastSearchScore = 0;
+    bool inPostScan = false;           // 防止复核里再触发复核
+    int vcfNodes = 0;                  // VCF 探针节点计数（每次探针前清零）
+    int vctNodes = 0;                  // VCT 探针节点计数
+    int vcfWinFours = 0;               // 最近一次 VCF 证明的手数（攻方视角，需按初始预算偏移换算）
+    int vctWinMovesLeft = 0;           // 必胜证明节点的剩余威胁手数（杀距比较用）
+    int vcfNodeLimit = 3000000;        // VCF 节点上限兜底
+    int vctNodeLimit = 600000;         // VCT 节点上限兜底（45 万节点 ~0.85s）
+};
+static SearchContext g_defaultCtx{g_ttStorage, g_threatTTStorage};
+// wasm 无 pthread：thread_local 会走模拟 TLS 慢路径（实测热路径吞吐 ~2x 拖慢），
+// 且指针间接本身也让 LLVM 无法静态寻址（每节点多两次内存往返）。单线程 wasm 直接
+// 以宏引用默认实例——热路径与旧全局变量版同速；原生并行构建才用 thread_local。
+#ifdef __EMSCRIPTEN__
+#define ctx() g_defaultCtx
+#else
+static thread_local SearchContext* t_ctxPtr = &g_defaultCtx;
+static inline SearchContext& ctx() { return *t_ctxPtr; }
+#endif
+
+// ============= 置换表访问（无锁条目） =============
+static inline int ttIndex(uint64_t hash) { return (int)(hash & (TT_SIZE - 1)); }
 
 static inline void ttStore(uint64_t hash, int depth, int64_t score, int bestX, int bestY, int64_t alpha, int64_t beta) {
-    int idx = ttIndex(hash);
-    TTEntry& entry = g_tt[idx];
-    
-    if (bestX >= 0 && bestY >= 0) {
-        entry.bestMove = bestY * BOARD_SIZE + bestX;
-    }
-    entry.depth = (int8_t)depth;
-    entry.hash = hash;
-    
-    // 限制分数到 int32 范围
-    int32_t s = (score > INT32_MAX) ? INT32_MAX : (score < INT32_MIN) ? INT32_MIN : (int32_t)score;
-    entry.score = s;
-    
-    if (score <= alpha) entry.flag = 2;  // UPPER
-    else if (score >= beta) entry.flag = 1;  // LOWER
-    else entry.flag = 0;  // EXACT
+    TTEntry& entry = ctx().tt[ttIndex(hash)];
+    const int32_t s = (score > INT32_MAX) ? INT32_MAX : (score < INT32_MIN) ? INT32_MIN : (int32_t)score;
+    int flag;
+    if (score <= alpha) flag = 2;       // UPPER
+    else if (score >= beta) flag = 1;   // LOWER
+    else flag = 0;                      // EXACT
+    const int bestMove = (bestX >= 0 && bestY >= 0) ? (bestY * BOARD_SIZE + bestX) : -1;
+    const uint64_t data = ttPackData(s, depth, flag, bestMove);
+    entry.word1.store(data, std::memory_order_relaxed);        // 数据先写
+    entry.word0.store(hash ^ data, std::memory_order_relaxed); // 校验字后写（其他线程至此才可能见到完整条目）
 }
 
-static inline const TTEntry* ttLookup(uint64_t hash, int depth) {
-    int idx = ttIndex(hash);
-    const TTEntry& entry = g_tt[idx];
-    if (entry.hash == hash && entry.depth >= depth) {
-        return &entry;
+// 查找结果（条目是 packed 的，回传解包值；hit=false 即 miss）
+struct TTProbe { bool hit = false; int32_t score = 0; int depth = 0; int flag = 0; int bestMove = -1; };
+static inline TTProbe ttLookup(uint64_t hash, int depth) {
+    TTProbe out;
+    const TTEntry& entry = ctx().tt[ttIndex(hash)];
+    const uint64_t w1 = entry.word1.load(std::memory_order_relaxed);
+    const uint64_t w0 = entry.word0.load(std::memory_order_relaxed);
+    if ((w0 ^ w1) != hash) return out;      // 键校验失败（写完前/被覆盖）：按 miss
+    const int d = ttDepthOf(w1);
+    if (d < depth) return out;              // 深度不足
+    out.hit = true; out.score = ttScoreOf(w1); out.depth = d; out.flag = ttFlagOf(w1); out.bestMove = ttBestMoveOf(w1);
+    return out;
+}
+
+// ============= 威胁搜索置换表（每线程私有，无需无锁） =============
+static inline void threatTtClear() {
+    memset(ctx().threatTT, 0, sizeof(ThreatTTEntry) * THREAT_TT_SIZE);
+}
+
+static inline const ThreatTTEntry* threatTtLookup(uint64_t hash) {
+    const ThreatTTEntry& e = ctx().threatTT[hash & (THREAT_TT_SIZE - 1)];
+    return (e.depth != 0 && e.hash == hash) ? &e : nullptr;
+}
+
+static inline void threatTtStore(uint64_t hash, int depth, bool result, int bestX, int bestY) {
+    ThreatTTEntry& e = ctx().threatTT[hash & (THREAT_TT_SIZE - 1)];
+    if (depth <= 0 || depth > 127) return;
+    if (e.depth == 0 || e.hash != hash || !result) {   // 已证必胜的结论优先保留
+        e.hash = hash;
+        e.depth = (int8_t)depth;
+        e.result = result ? 1 : 0;
     }
-    return nullptr;
+    if (result && bestX >= 0 && bestY >= 0) {
+        e.bestMove = (int16_t)(bestY * BOARD_SIZE + bestX);
+    }
 }
 
 // ============= 时间管理 =============
 
 static inline int64_t getElapsedMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - g_searchStartTime).count();
+        std::chrono::steady_clock::now() - ctx().searchStartTime).count();
 }
 
 static inline bool checkTime() {
-    if ((g_nodesVisited & 0x1FF) == 0) {  // 每 512 节点检查一次
+    if ((ctx().nodesVisited & 0x1FF) == 0) {  // 每 512 节点检查一次
         if (getElapsedMs() > g_timeBudgetMs) {
-            g_timedOut = true;
+            ctx().timedOut = true;
             return true;
         }
     }
-    return g_timedOut;
+    return ctx().timedOut;
 }
 
 // ============= 评估函数 =============
@@ -593,7 +680,6 @@ static constexpr int VCT_FILTER_NODE_LIMIT = 300000;  // b1-B：补枪探针的�
 // 根节点战术加成限幅：不得把分数线推离搜索语义（未限幅时实测可达 ±4800 万，盖过搜索结论）
 static constexpr int64_t MAX_TACTICAL_ADJUST = 10000000;
 static constexpr size_t POST_SCAN_MAX_FINALISTS = 5;  // 决赛候选数超过这个就不复核
-static bool g_inPostScan = false;                      // 防止复核里再触发复核
 
 // 距根 k 层发生：k 越大越晚
 static inline int64_t mateWinScore(int64_t k) {
@@ -763,7 +849,7 @@ std::vector<Move> generateCandidates(Board& board, int maxCandidates, bool isRoo
 // ============= NegaMax 搜索 =============
 
 static int64_t negamax(Board& board, int64_t alpha, int64_t beta, int depth, uint64_t hash) {
-    g_nodesVisited++;
+    ctx().nodesVisited++;
     
     // 时间检查
     if (checkTime()) {
@@ -785,12 +871,12 @@ static int64_t negamax(Board& board, int64_t alpha, int64_t beta, int depth, uin
     }
     
     // 置换表查找
-    const TTEntry* ttEntry = ttLookup(hash, depth);
-    if (ttEntry) {
-        int32_t ttScore = ttEntry->score;
-        if (ttEntry->flag == 0) return ttScore;  // EXACT
-        if (ttEntry->flag == 1 && ttScore > alpha) alpha = ttScore;  // LOWER
-        if (ttEntry->flag == 2 && ttScore < beta) beta = ttScore;  // UPPER
+    TTProbe tt = ttLookup(hash, depth);
+    if (tt.hit) {
+        int32_t ttScore = tt.score;
+        if (tt.flag == 0) return ttScore;  // EXACT
+        if (tt.flag == 1 && ttScore > alpha) alpha = ttScore;  // LOWER
+        if (tt.flag == 2 && ttScore < beta) beta = ttScore;  // UPPER
         if (alpha >= beta) return ttScore;
     }
     
@@ -801,8 +887,8 @@ static int64_t negamax(Board& board, int64_t alpha, int64_t beta, int depth, uin
     if (candidates.empty()) return 0;
     
     // 如果有置换表的最佳走法，移到最前面
-    if (ttEntry && ttEntry->bestMove >= 0) {
-        int bm = ttEntry->bestMove;
+    if (tt.hit && tt.bestMove >= 0) {
+        int bm = tt.bestMove;
         int bmX = bm % BOARD_SIZE;
         int bmY = bm / BOARD_SIZE;
         for (auto& m : candidates) {
@@ -834,7 +920,7 @@ static int64_t negamax(Board& board, int64_t alpha, int64_t beta, int depth, uin
         board.undo();
 
         // 超时后当前候选的结果不完整，不能覆盖已完成候选
-        if (g_timedOut) break;
+        if (ctx().timedOut) break;
 
         if (score > bestScore) {
             bestScore = score;
@@ -847,7 +933,7 @@ static int64_t negamax(Board& board, int64_t alpha, int64_t beta, int depth, uin
     }
     
     // 仅缓存完整搜索结果，超时结果不能污染置换表
-    if (!g_timedOut) {
+    if (!ctx().timedOut) {
         ttStore(hash, depth, bestScore, bestX, bestY, alpha, beta);
     }
     
@@ -872,9 +958,6 @@ static constexpr int VCF_MAX_FOURS = 16;       // 最多连续冲四手数（进
 static constexpr int VCF_DEFENSE_FOURS = 6;
 static constexpr int VCF_MAX_FOUR_MOVES = 16;  // 单节点最多尝试的造四着法
 static constexpr int VCF_MAX_FIVE_PTS = 8;     // 单节点最多收集的五连点
-static int g_vcfNodes = 0;                     // 节点计数（独立于主搜索，用于限时）
-static int g_vcfNodeLimit = 3000000;           // 节点上限兜底
-static int g_vcfWinFours = 0;
 
 struct VcfPoint { int x, y; };
 
@@ -940,8 +1023,8 @@ static int vcfCountImmediateFives(const Board& b, int player, VcfPoint* firstOut
 }
 
 static inline bool vcfTimeUp(int64_t deadlineMs) {
-    if (g_vcfNodes > g_vcfNodeLimit) return true;    // 节点上限兜底
-    if ((g_vcfNodes & 0x3F) != 0) return false;      // 每 64 节点查一次时间
+    if (ctx().vcfNodes > ctx().vcfNodeLimit) return true;    // 节点上限兜底
+    if ((ctx().vcfNodes & 0x3F) != 0) return false;      // 每 64 节点查一次时间
     return getElapsedMs() > deadlineMs;
 }
 
@@ -950,7 +1033,7 @@ static inline bool vcfTimeUp(int64_t deadlineMs) {
 static bool vcfSearch(Board& b, int attacker, int defender, int foursLeft,
                       int64_t deadlineMs, int* rootX, int* rootY) {
     if (foursLeft <= 0) return false;
-    g_vcfNodes++;
+    ctx().vcfNodes++;
     if (vcfTimeUp(deadlineMs)) return false;
 
     // 后手若有立即成五的点，攻击方的四必须正好挡在它上面，否则后手抢先成五
@@ -983,7 +1066,7 @@ static bool vcfSearch(Board& b, int attacker, int defender, int foursLeft,
             if (five) {
                 // 直接成五，后手来不及
                 if (rootX) { *rootX = x; *rootY = y; }
-                g_vcfWinFours = VCF_MAX_FOURS - foursLeft + 1;
+                ctx().vcfWinFours = VCF_MAX_FOURS - foursLeft + 1;
                 return true;
             }
             if (n == 0) continue;            // 不是造四着法
@@ -1006,7 +1089,7 @@ static bool vcfSearch(Board& b, int attacker, int defender, int foursLeft,
         if (fm[i].pts >= 2) {
             // 活四/双四：对面挡不全
             if (rootX) { *rootX = px; *rootY = py; }
-            g_vcfWinFours = VCF_MAX_FOURS - foursLeft + 1;
+            ctx().vcfWinFours = VCF_MAX_FOURS - foursLeft + 1;
             return true;
         }
 
@@ -1026,13 +1109,13 @@ static bool vcfSearch(Board& b, int attacker, int defender, int foursLeft,
 // 当前局面轮走方是否存在「连续冲四」必胜（VCF）。
 // 供自检/测试使用：返回 true 表示存在只靠冲四就能赢的线索。
 bool hasVcfWin(Board& board) {
-    g_vcfNodes = 0;
-    const int savedLimit = g_vcfNodeLimit;
-    g_vcfNodeLimit = 200000;                 // 查询用途：快速给出结论
+    ctx().vcfNodes = 0;
+    const int savedLimit = ctx().vcfNodeLimit;
+    ctx().vcfNodeLimit = 200000;                 // 查询用途：快速给出结论
     int attacker = board.getPlayer();
     int defender = (attacker == BLACK) ? WHITE : BLACK;
     bool win = vcfSearch(board, attacker, defender, VCF_MAX_FOURS, INT64_MAX, nullptr, nullptr);
-    g_vcfNodeLimit = savedLimit;    return win;
+    ctx().vcfNodeLimit = savedLimit;    return win;
 }
 
 // ============= 战术搜索置换表 =============
@@ -1045,37 +1128,6 @@ bool hasVcfWin(Board& board) {
 //   - 未证必胜：手数更少时不成立
 // 「未证必胜」只在搜索穷尽时才是结论；被节点/时间上限打断的返回不带结论，
 // 但缓存它只会让搜索引擎更保守（少报必胜、少剔除候选），不会造成误报。
-struct ThreatTTEntry {
-    uint64_t hash;
-    int8_t depth;      // 立此结论时还剩多少手威胁
-    uint8_t result;    // 0=未证必胜, 1=已证必胜
-    int16_t bestMove;  // y*15+x，必胜时的第一手
-};
-
-static constexpr int THREAT_TT_SIZE = 1 << 18;
-static ThreatTTEntry g_threatTT[THREAT_TT_SIZE];
-
-static inline void threatTtClear() {
-    memset(g_threatTT, 0, sizeof(g_threatTT));
-}
-
-static inline const ThreatTTEntry* threatTtLookup(uint64_t hash) {
-    const ThreatTTEntry& e = g_threatTT[hash & (THREAT_TT_SIZE - 1)];
-    return (e.depth != 0 && e.hash == hash) ? &e : nullptr;
-}
-
-static inline void threatTtStore(uint64_t hash, int depth, bool result, int bestX, int bestY) {
-    if (depth <= 0 || depth > 127) return;
-    ThreatTTEntry& e = g_threatTT[hash & (THREAT_TT_SIZE - 1)];
-    if (e.depth == 0 || e.hash != hash || !result) {   // 已证必胜的结论优先保留
-        e.hash = hash;
-        e.depth = (int8_t)depth;
-        e.result = result ? 1 : 0;
-    }
-    if (result && bestX >= 0 && bestY >= 0) {
-        e.bestMove = (int16_t)(bestY * BOARD_SIZE + bestX);
-    }
-}
 
 // 局面哈希 + 攻方（同一局面可能出现攻守互换的两套结论）
 static inline uint64_t threatKey(const Board& b, int attacker) {
@@ -1096,20 +1148,14 @@ static inline uint64_t threatKey(const Board& b, int attacker) {
 static constexpr int VCT_MAX_MOVES = 8;          // 攻方最多连续威胁手数（进攻）
 static constexpr int VCT_MAX_THREAT_MOVES = 16;  // 单节点最多枚举的威胁着法
 static constexpr int VCT_MAX_DEF_REPLIES = 16;   // 单节点最多枚举的应手（超出即放弃）
-static int g_vctNodes = 0;
-static int g_vctNodeLimit = 600000;   // 上限与时间期限双保险：实测 45 万节点 ~0.85s
-// 证明节点的剩余威胁手数——「杀距比较」的距离来源（b1-B）。
-// 只在「本节点检测到必胜」处赋值（链式/递归证明由更深的节点记录，父节点不覆写）；
-// 换算：攻方强制手数 = VCT_MAX_MOVES - 该值 + 1。
-static int g_vctWinMovesLeft = 0;
 
 // 注意：VCT 只用于「进攻」（找到自己的必胜线索立即走）。
 // 不做防守剔除——实测它会把必败局面里「挡一手拖延」的着法也一并剔掉，
 // 反而让引擎放弃防守直接速败；而它要证明的那类深链杀法又超出时间预算。
 
 static inline bool vctTimeUp(int64_t deadlineMs) {
-    if (g_vctNodes > g_vctNodeLimit) return true;
-    if ((g_vctNodes & 0x3F) != 0) return false;
+    if (ctx().vctNodes > ctx().vctNodeLimit) return true;
+    if ((ctx().vctNodes & 0x3F) != 0) return false;
     return getElapsedMs() > deadlineMs;
 }
 
@@ -1184,7 +1230,7 @@ static bool vctHasFourMove(Board& b, int player) {
 static bool vctSearch(Board& b, int attacker, int defender, int movesLeft,
                       int64_t deadlineMs, int* rootX, int* rootY) {
     if (movesLeft <= 0) return false;
-    if (++g_vctNodes > g_vctNodeLimit || vctTimeUp(deadlineMs)) return false;
+    if (++ctx().vctNodes > ctx().vctNodeLimit || vctTimeUp(deadlineMs)) return false;
 
     // 置换表：同一局面被不同走法顺序反复展开时直接复用结论
     uint64_t th = threatKey(b, attacker);
@@ -1195,7 +1241,7 @@ static bool vctSearch(Board& b, int attacker, int defender, int movesLeft,
                     *rootX = e->bestMove % BOARD_SIZE;
                     *rootY = e->bestMove / BOARD_SIZE;
                 }
-                g_vctWinMovesLeft = e->depth;   // 复用证明：距离取立此结论时的手数
+                ctx().vctWinMovesLeft = e->depth;   // 复用证明：距离取立此结论时的手数
                 return true;
             }
         } else if (movesLeft <= e->depth) {
@@ -1209,7 +1255,7 @@ static bool vctSearch(Board& b, int attacker, int defender, int movesLeft,
         VcfPoint p;
         if (vcfCountImmediateFives(b, attacker, &p) > 0) {
             if (rootX) { *rootX = p.x; *rootY = p.y; }
-            g_vctWinMovesLeft = movesLeft;      // 一手成五：距离本节点
+            ctx().vctWinMovesLeft = movesLeft;      // 一手成五：距离本节点
             threatTtStore(th, ttDepth, true, p.x, p.y);
             return true;
         }
@@ -1218,7 +1264,7 @@ static bool vctSearch(Board& b, int attacker, int defender, int movesLeft,
     VcfPoint defFive;
     int defFiveCount = vcfCountImmediateFives(b, defender, &defFive);
     if (defFiveCount >= 2) return false;   // 挡不全
-    if (g_vctNodes > g_vctNodeLimit) return false;
+    if (ctx().vctNodes > ctx().vctNodeLimit) return false;
 
     VcfPoint threats[VCT_MAX_THREAT_MOVES];
     int threatCount = 0;
@@ -1258,7 +1304,7 @@ static bool vctSearch(Board& b, int attacker, int defender, int movesLeft,
             if (b.get(x, y) != EMPTY) continue;
 
             if (!vctNearStone(b, x, y, NEIGHBOR_RADIUS)) continue;
-            if (++g_vctNodes > g_vctNodeLimit || vctTimeUp(deadlineMs)) return false;
+            if (++ctx().vctNodes > ctx().vctNodeLimit || vctTimeUp(deadlineMs)) return false;
             if (defFiveCount == 1 && !(x == defFive.x && y == defFive.y)) continue;
 
             b.set(x, y, attacker);
@@ -1269,14 +1315,14 @@ static bool vctSearch(Board& b, int attacker, int defender, int movesLeft,
             if (five) {                                  // 直接成五
                 b.set(x, y, EMPTY);
                 if (rootX) { *rootX = x; *rootY = y; }
-                g_vctWinMovesLeft = movesLeft;      // 一手成五：距离本节点
+                ctx().vctWinMovesLeft = movesLeft;      // 一手成五：距离本节点
                 threatTtStore(th, ttDepth, true, x, y);
                 return true;
             }
             if (n >= 2) {                                // 活四 / 双四
                 b.set(x, y, EMPTY);
                 if (rootX) { *rootX = x; *rootY = y; }
-                g_vctWinMovesLeft = movesLeft;      // 活四即必胜：距离本节点
+                ctx().vctWinMovesLeft = movesLeft;      // 活四即必胜：距离本节点
                 threatTtStore(th, ttDepth, true, x, y);
                 return true;
             }
@@ -1305,7 +1351,7 @@ static bool vctSearch(Board& b, int attacker, int defender, int movesLeft,
                     if (b.get(dx, dy) != EMPTY) continue;
 
                     if (!vctNearStone(b, dx, dy, 4)) continue;
-                    if (++g_vctNodes > g_vctNodeLimit || vctTimeUp(deadlineMs)) { b.set(x, y, EMPTY); return false; }
+                    if (++ctx().vctNodes > ctx().vctNodeLimit || vctTimeUp(deadlineMs)) { b.set(x, y, EMPTY); return false; }
                     bool isFour = vctIsFourMove(b, dx, dy, defender);
                     bool stillThreat = false;
                     if (!isFour) {
@@ -1326,7 +1372,7 @@ static bool vctSearch(Board& b, int attacker, int defender, int movesLeft,
             if (rc == 0) {                // 拆不掉 -> 必胜
                 b.set(x, y, EMPTY);
                 if (rootX) { *rootX = x; *rootY = y; }
-                g_vctWinMovesLeft = movesLeft;      // 三威胁无解：距离本节点
+                ctx().vctWinMovesLeft = movesLeft;      // 三威胁无解：距离本节点
                 threatTtStore(th, ttDepth, true, x, y);
                 return true;
             }
@@ -1356,11 +1402,11 @@ static bool vctSearch(Board& b, int attacker, int defender, int movesLeft,
 // 其 mated_in/mate_in 直接用分值编码将杀距离并参与 alpha/beta 剪枝，VCF 防守侧
 // 不做任何特殊「拖延」逻辑——拖延由 mate 分值的自然序产生。
 //
-// VCF：g_vcfWinFours = VCF_MAX_FOURS - foursLeft + 1，其中 foursLeft 是探针的
+// VCF：ctx().vcfWinFours = VCF_MAX_FOURS - foursLeft + 1，其中 foursLeft 是探针的
 //      剩余预算。防守探针以 VCF_DEFENSE_FOURS 起步（进攻以 VCF_MAX_FOURS 起步），
 //      换算回本探针实际冲四手数要减掉这个固定偏移：
-//      foursUsed = g_vcfWinFours - (VCF_MAX_FOURS - initialFours)。
-// VCT：g_vctWinMovesLeft 是必胜证明节点的剩余威胁手数，
+//      foursUsed = ctx().vcfWinFours - (VCF_MAX_FOURS - initialFours)。
+// VCT：ctx().vctWinMovesLeft 是必胜证明节点的剩余威胁手数，
 //      attackerMoves = VCT_MAX_MOVES - 该值 + 1。
 // ply ≈ 2*攻方强制手数 - 1（每手强制着法之间夹一手被迫应招，最后一手成五）。
 //
@@ -1378,12 +1424,12 @@ static inline int64_t killValueFromMoves(int attackerMoves) {
 }
 
 static inline int64_t vcfKillValue(int initialFours) {
-    const int foursUsed = g_vcfWinFours - (VCF_MAX_FOURS - initialFours);
+    const int foursUsed = ctx().vcfWinFours - (VCF_MAX_FOURS - initialFours);
     return killValueFromMoves(foursUsed);
 }
 
 static inline int64_t vctKillValue() {
-    const int attackerMoves = VCT_MAX_MOVES - g_vctWinMovesLeft + 1;
+    const int attackerMoves = VCT_MAX_MOVES - ctx().vctWinMovesLeft + 1;
     return killValueFromMoves(attackerMoves);
 }
 
@@ -1391,9 +1437,9 @@ static inline int64_t vctKillValue() {
 
 SearchResult findBestMove(Board& board) {
     SearchResult result;
-    g_nodesVisited = 0;
-    g_timedOut = false;
-    g_searchStartTime = std::chrono::steady_clock::now();
+    ctx().nodesVisited = 0;
+    ctx().timedOut = false;
+    ctx().searchStartTime = std::chrono::steady_clock::now();
     
     uint64_t rootHash = computeHash(board);
     
@@ -1409,9 +1455,9 @@ SearchResult findBestMove(Board& board) {
     }
 
     // 如果有置换表的最佳走法，移到最前面
-    const TTEntry* ttEntry = ttLookup(rootHash, 0);
-    if (ttEntry && ttEntry->bestMove >= 0) {
-        int bm = ttEntry->bestMove;
+    TTProbe rootTT = ttLookup(rootHash, 0);
+    if (rootTT.hit && rootTT.bestMove >= 0) {
+        int bm = rootTT.bestMove;
         int bmX = bm % BOARD_SIZE;
         int bmY = bm / BOARD_SIZE;
         for (size_t i = 0; i < rootCandidates.size(); i++) {
@@ -1490,20 +1536,20 @@ SearchResult findBestMove(Board& board) {
     // 1) 进攻：自己能连续冲四取胜就直接走（已证必胜，无需再搜）
     {
         int vcfX = -1, vcfY = -1;
-        g_vcfNodes = 0;
+        ctx().vcfNodes = 0;
         if (vcfSearch(board, rootPlayer, rootOpponent, VCF_MAX_FOURS,
                       g_timeBudgetMs / 5, &vcfX, &vcfY)) {
             result.bestX = vcfX;
             result.bestY = vcfY;
             result.bestScore = WIN_THRESHOLD;
-            result.searchDepth = 2 * g_vcfWinFours;   // 冲破四手数折算成层数
-            result.nodesVisited = g_nodesVisited;
+            result.searchDepth = 2 * ctx().vcfWinFours;   // 冲破四手数折算成层数
+            result.nodesVisited = ctx().nodesVisited;
             result.elapsedMs = getElapsedMs();
             result.timedOut = false;
-            g_lastSearchDepth = result.searchDepth;
-            g_lastSearchNodes = result.nodesVisited;
-            g_lastSearchTimeMs = result.elapsedMs;
-            g_lastSearchScore = result.bestScore;
+            ctx().lastSearchDepth = result.searchDepth;
+            ctx().lastSearchNodes = result.nodesVisited;
+            ctx().lastSearchTimeMs = result.elapsedMs;
+            ctx().lastSearchScore = result.bestScore;
             return result;
         }
     }
@@ -1511,19 +1557,19 @@ SearchResult findBestMove(Board& board) {
     // 1b) 进攻（VCT）：连冲四找不到时，再查「三」施压型的连续威胁
     {
         int vctX = -1, vctY = -1;
-        g_vctNodes = 0;
+        ctx().vctNodes = 0;
         if (vctSearch(board, rootPlayer, rootOpponent, VCT_MAX_MOVES, g_timeBudgetMs / 4, &vctX, &vctY)) {
             result.bestX = vctX;
             result.bestY = vctY;
             result.bestScore = WIN_THRESHOLD;
             result.searchDepth = 0;
-            result.nodesVisited = g_nodesVisited;
+            result.nodesVisited = ctx().nodesVisited;
             result.elapsedMs = getElapsedMs();
             result.timedOut = false;
-            g_lastSearchDepth = result.searchDepth;
-            g_lastSearchNodes = result.nodesVisited;
-            g_lastSearchTimeMs = result.elapsedMs;
-            g_lastSearchScore = result.bestScore;
+            ctx().lastSearchDepth = result.searchDepth;
+            ctx().lastSearchNodes = result.nodesVisited;
+            ctx().lastSearchTimeMs = result.elapsedMs;
+            ctx().lastSearchScore = result.bestScore;
             return result;
         }
     }
@@ -1543,8 +1589,8 @@ SearchResult findBestMove(Board& board) {
     std::vector<KillDist> killDist;
     killDist.reserve(rootCandidates.size());
     {
-        g_vcfNodes = 0;
-        g_vctNodes = 0;
+        ctx().vcfNodes = 0;
+        ctx().vctNodes = 0;
         const int64_t vcfDeadline = g_timeBudgetMs * 3 / 10;   // VCF 阶段最多占 30%
         const int64_t vctDeadline = g_timeBudgetMs * 45 / 100; // VCF+VCT 合计最多占 45%
         std::vector<Move> safe;
@@ -1576,15 +1622,15 @@ SearchResult findBestMove(Board& board) {
                     stillSafe.push_back(c);
                     continue;
                 }
-                g_vcfNodes = 0;   // 契约 4：两个计数器是累计的，每次探针前必须清零
-                g_vctNodes = 0;
-                const int savedVctLimit = g_vctNodeLimit;
-                g_vctNodeLimit = VCT_FILTER_NODE_LIMIT;   // 补枪档：收紧节点上限保主搜索深度
+                ctx().vcfNodes = 0;   // 契约 4：两个计数器是累计的，每次探针前必须清零
+                ctx().vctNodes = 0;
+                const int savedVctLimit = ctx().vctNodeLimit;
+                ctx().vctNodeLimit = VCT_FILTER_NODE_LIMIT;   // 补枪档：收紧节点上限保主搜索深度
                 board.set(c.pos.x, c.pos.y, rootPlayer);
                 bool oppWin = vctSearch(board, rootOpponent, rootPlayer, VCT_MAX_MOVES,
                                         vctDeadline, nullptr, nullptr);
                 board.set(c.pos.x, c.pos.y, EMPTY);
-                g_vctNodeLimit = savedVctLimit;
+                ctx().vctNodeLimit = savedVctLimit;
                 if (oppWin) {
                     banned++;
                     killDist.push_back({c.pos.x, c.pos.y, vctKillValue()});
@@ -1657,7 +1703,7 @@ SearchResult findBestMove(Board& board) {
             }
 
             // 超时后当前候选的结果不完整，不能覆盖已完成候选
-            if (g_timedOut) break;
+            if (ctx().timedOut) break;
 
             rootCandidates[ci].lastRawScore = rawScore;   // 供「选定手核杀保护」在收尾时换算候选分
 
@@ -1681,7 +1727,7 @@ SearchResult findBestMove(Board& board) {
                 }
             }
             
-            if (g_timedOut) break;
+            if (ctx().timedOut) break;
         }
         
         // 真实必胜优先于一切加成；未被证败者次之；全部被证败时才退回原有评选
@@ -1693,7 +1739,7 @@ SearchResult findBestMove(Board& board) {
             bestXInIter = bestLiveX;
             bestYInIter = bestLiveY;
             bestInIter = bestLiveScore;
-        } else if (g_timedOut) {
+        } else if (ctx().timedOut) {
             // 本迭代被超时截断：候选只扫了一部分。「所有着法都已证败」这个
             // 结论只在完整扫描后才成立，否则没来得及评估的活路会被当成必败，
             // 于是同一局面随预算变化在「必胜/必败」之间翻转（实测 8s 时只扫
@@ -1748,15 +1794,15 @@ SearchResult findBestMove(Board& board) {
         // 杀核实，不受影响。
         if (bestRawInIter <= LOSS_SCORE_CEIL && bestXInIter >= 0) {
             const int64_t verifyDeadline = g_timeBudgetMs * 3 / 2;  // 抽查最多用到 1.5 倍预算
-            const bool savedTimedOut = g_timedOut;
+            const bool savedTimedOut = ctx().timedOut;
             bool anySurvivor = false;
             int checkedTop = 0;
             for (const auto& c : rootCandidates) {
                 if (checkedTop >= 2) break;
                 if (getElapsedMs() > verifyDeadline) break;
                 checkedTop++;
-                g_vcfNodes = 0;   // 抽查前必须清零：两个计数器是累计的，超上限后搜索会「零节点
-                g_vctNodes = 0;   // 即判超时」直接空转返回 false——实测把必败局误判成「对手证不出杀」
+                ctx().vcfNodes = 0;   // 抽查前必须清零：两个计数器是累计的，超上限后搜索会「零节点
+                ctx().vctNodes = 0;   // 即判超时」直接空转返回 false——实测把必败局误判成「对手证不出杀」
                 board.set(c.pos.x, c.pos.y, rootPlayer);
                 bool oppWin = vcfSearch(board, rootOpponent, rootPlayer,
                                         VCF_DEFENSE_FOURS, verifyDeadline, nullptr, nullptr);
@@ -1767,7 +1813,7 @@ SearchResult findBestMove(Board& board) {
                 board.set(c.pos.x, c.pos.y, EMPTY);
                 if (!oppWin) { anySurvivor = true; break; }
             }
-            g_timedOut = savedTimedOut;   // 抽查不改变主搜索的超时状态
+            ctx().timedOut = savedTimedOut;   // 抽查不改变主搜索的超时状态
             if (anySurvivor) {
                 bestXInIter = -1;
                 bestYInIter = -1;
@@ -1800,7 +1846,7 @@ SearchResult findBestMove(Board& board) {
         }
         
         // 检查时间
-        if (g_timedOut) break;
+        if (ctx().timedOut) break;
         
         // 只有真实搜索分达到必胜阈值才能提前结束，战术排序加成不能触发
         if (bestRawScore >= WIN_SCORE_FLOOR) break;
@@ -1827,15 +1873,15 @@ SearchResult findBestMove(Board& board) {
     // 挑选会挑错——实测把必败的一手评成 +4600 万。这里对这批决赛候选逐个做一次
     // 「对手应招搜索」，取对手得分最低的一手：等于把富余时间花在最后一层深算上。
     // 触发条件是「候选数少」而不是「并列」（目标局面三手里最佳分唯一，靠并列根本收不到）。
-    if (!g_inPostScan && result.bestX >= 0 &&
+    if (!ctx().inPostScan && result.bestX >= 0 &&
         g_timeBudgetMs >= POST_SCAN_MIN_BUDGET &&
         rootCandidates.size() >= 2 && rootCandidates.size() <= POST_SCAN_MAX_FINALISTS &&
         bestRawScore > LOSS_SCORE_CEIL && bestRawScore < WIN_SCORE_FLOOR) {
-        g_inPostScan = true;
-        const auto savedStart = g_searchStartTime;
+        ctx().inPostScan = true;
+        const auto savedStart = ctx().searchStartTime;
         const int64_t savedBudget = g_timeBudgetMs;
-        const int64_t savedNodes = g_nodesVisited;
-        const bool savedTimedOut = g_timedOut;
+        const int64_t savedNodes = ctx().nodesVisited;
+        const bool savedTimedOut = ctx().timedOut;
         g_timeBudgetMs = (savedBudget / 2 < 8000) ? savedBudget / 2 : 8000;   // 每个决赛候选的复核预算（封顶 8s）
         int64_t bestOpp = INT64_MAX;
         int pickX = result.bestX, pickY = result.bestY;
@@ -1853,11 +1899,11 @@ SearchResult findBestMove(Board& board) {
                 pickY = rootCandidates[i].pos.y;
             }
         }
-        g_inPostScan = false;
-        g_searchStartTime = savedStart;
+        ctx().inPostScan = false;
+        ctx().searchStartTime = savedStart;
         g_timeBudgetMs = savedBudget;
-        g_nodesVisited = savedNodes;
-        g_timedOut = savedTimedOut;
+        ctx().nodesVisited = savedNodes;
+        ctx().timedOut = savedTimedOut;
         if (bestOpp != INT64_MAX) {
             result.bestX = pickX;
             result.bestY = pickY;
@@ -1870,21 +1916,21 @@ SearchResult findBestMove(Board& board) {
     // 收尾时对最终选定的一手做一次对手 VCF/VCT 核杀：证出杀、且存在幸存候选时，
     // 换成「评分序最靠前的幸存候选」——幸存者的被杀深度在探针射程之外，方向保守。
     // 低预算档（<8s）跳过：探针开销占比过大（500ms 级回归测试因此天然隔离）。
-    if (!g_inPostScan && result.bestX >= 0 && rootCandidates.size() >= 2 &&
+    if (!ctx().inPostScan && result.bestX >= 0 && rootCandidates.size() >= 2 &&
         g_timeBudgetMs >= 8000 && bestRawScore > LOSS_SCORE_CEIL) {
         const int64_t pickDeadline = g_timeBudgetMs * 3 / 2;
-        const bool savedTimedOutP = g_timedOut;
-        const int savedVcfLimitP = g_vcfNodeLimit;
-        const int savedVctLimitP = g_vctNodeLimit;
-        g_vcfNodeLimit = 1500000;  // 收尾核杀：放宽节点上限（250k 实测会漏掉深链杀，
-        g_vctNodeLimit = 600000;   // 如 n15 需要 ~60 万节点级），总开销仍受期限约束
+        const bool savedTimedOutP = ctx().timedOut;
+        const int savedVcfLimitP = ctx().vcfNodeLimit;
+        const int savedVctLimitP = ctx().vctNodeLimit;
+        ctx().vcfNodeLimit = 1500000;  // 收尾核杀：放宽节点上限（250k 实测会漏掉深链杀，
+        ctx().vctNodeLimit = 600000;   // 如 n15 需要 ~60 万节点级），总开销仍受期限约束
         int pickIdx = -1;
         for (size_t i = 0; i < rootCandidates.size(); i++) {
             if (rootCandidates[i].pos.x == result.bestX && rootCandidates[i].pos.y == result.bestY) { pickIdx = (int)i; break; }
         }
         bool pickKilled = false;
         if (pickIdx >= 0 && getElapsedMs() < pickDeadline) {
-            g_vcfNodes = 0; g_vctNodes = 0;
+            ctx().vcfNodes = 0; ctx().vctNodes = 0;
             board.set(result.bestX, result.bestY, rootPlayer);
             pickKilled = vcfSearch(board, rootOpponent, rootPlayer, VCF_DEFENSE_FOURS, pickDeadline, nullptr, nullptr);
             if (!pickKilled) {
@@ -1906,7 +1952,7 @@ SearchResult findBestMove(Board& board) {
             for (const auto& ent : order) {
                 if (probed >= 8 || getElapsedMs() > pickDeadline) break;
                 const Move& c = rootCandidates[ent.second];
-                g_vcfNodes = 0; g_vctNodes = 0;
+                ctx().vcfNodes = 0; ctx().vctNodes = 0;
                 board.set(c.pos.x, c.pos.y, rootPlayer);
                 bool oppWin = vcfSearch(board, rootOpponent, rootPlayer, VCF_DEFENSE_FOURS, pickDeadline, nullptr, nullptr);
                 if (!oppWin) {
@@ -1922,19 +1968,19 @@ SearchResult findBestMove(Board& board) {
                 }
             }
         }
-        g_vcfNodeLimit = savedVcfLimitP;
-        g_vctNodeLimit = savedVctLimitP;
-        g_timedOut = savedTimedOutP;
+        ctx().vcfNodeLimit = savedVcfLimitP;
+        ctx().vctNodeLimit = savedVctLimitP;
+        ctx().timedOut = savedTimedOutP;
     }
-    result.nodesVisited = g_nodesVisited;
+    result.nodesVisited = ctx().nodesVisited;
     result.elapsedMs = getElapsedMs();
-    result.timedOut = g_timedOut;
+    result.timedOut = ctx().timedOut;
     
     // 存储到全局变量
-    g_lastSearchDepth = result.searchDepth;
-    g_lastSearchNodes = result.nodesVisited;
-    g_lastSearchTimeMs = result.elapsedMs;
-    g_lastSearchScore = result.bestScore;
+    ctx().lastSearchDepth = result.searchDepth;
+    ctx().lastSearchNodes = result.nodesVisited;
+    ctx().lastSearchTimeMs = result.elapsedMs;
+    ctx().lastSearchScore = result.bestScore;
     
     return result;
 }
@@ -1971,19 +2017,25 @@ void setTimeBudget(int ms) {
 }
 
 int64_t getNodesVisited() {
-    return g_nodesVisited;
+    return g_defaultCtx.nodesVisited;
 }
 
 void resetStats() {
-    g_nodesVisited = 0;
-    g_timedOut = false;
+    ctx().nodesVisited = 0;
+    ctx().timedOut = false;
 }
 
 // 清空搜索缓存（主置换表 + 威胁搜索置换表）。
 // 新开一局或悔棋后调用：避免上一局 / 被撤销分支的残留条目影响后续选择。
 // 实测不清空时，同一开局的应手会在并列着法间漂移（(6,6) -> (8,6)）。
 void clearSearchTables() {
-    memset(g_tt, 0, sizeof(g_tt));
+    // 三张主 TT（默认/参照/辅助共享）与威胁 TT 一并清——仅在没有线程搜索时调用。
+    // 并行驱动每线程的威胁 TT 是新建vector（零初始化），无需在此处理。
+    memset(g_ttStorage, 0, sizeof(TTEntry) * TT_SIZE);
+#ifndef __EMSCRIPTEN__
+    memset(g_ttRefStorage, 0, sizeof(TTEntry) * TT_SIZE);
+    memset(g_ttSmpStorage, 0, sizeof(TTEntry) * TT_SIZE);
+#endif
     threatTtClear();
 }
 
@@ -1996,17 +2048,90 @@ int getTimeBudgetMs() {
 }
 
 int getLastSearchDepth() {
-    return g_lastSearchDepth;
+    return g_defaultCtx.lastSearchDepth;
 }
 
 int64_t getLastSearchNodes() {
-    return g_lastSearchNodes;
+    return g_defaultCtx.lastSearchNodes;
 }
 
 int64_t getLastSearchTimeMs() {
-    return g_lastSearchTimeMs;
+    return g_defaultCtx.lastSearchTimeMs;
 }
 
 int64_t getLastSearchScore() {
-    return g_lastSearchScore;
+    return g_defaultCtx.lastSearchScore;
 }
+
+// ============= 并行搜索（保守 SMP；仅原生 CLI 启用） =============
+//
+// 2026-11-19 定档设计（曾实测经典全员共享 TT 的 lazy SMP，见下）：
+//  - 线程 0 = 参照线程：独立 TT（谁都不污染它），结果与单线程路径逐位一致；
+//  - 线程 1..N-1 = 辅助线程：互相共享另一张 TT（SMP 多样性来源），各带私有威胁 TT；
+//  - 合并只接受「严格更优」（分高，或同分更深）——并行结果构造性 ≥ 单线程。
+//  - 每线程跑完整 findBestMove（含 b1-B 过滤、post-scan、b3 收尾保护），互不等待；
+//    各线程自己的耗时时钟（g_timeBudgetMs 共享只读）天然对齐，无线程间同步原语。
+//
+// 为什么不用全员共享 TT 的经典 lazy SMP（Rapfi/Stockfish 式）：实测辅助线程的 TT
+// 互渗会把参照线程在「同分平局」上的 tie-break 带偏——game12-m13 从正确的 (6,4)
+// 翻成错手 (10,8)（正是 10s/15s 档记录过的错误着法）。本仓库的精确夹具纪律
+// （「不劣于旧」）不容这种抖动，故参照线程与辅助线程的 TT 物理隔离。
+#ifndef __EMSCRIPTEN__
+#include <thread>
+#include <vector>
+// g_ttRefStorage / g_ttSmpStorage / g_parallelMergeInfo 在 TT 节声明（clearSearchTables 要用）。
+
+SearchResult findBestMoveParallel(Board& board, int numThreads) {
+    if (numThreads <= 1) return findBestMove(board);
+
+    std::vector<SearchContext> ctxs;
+    std::vector<std::vector<ThreatTTEntry>> threatPools;
+    ctxs.reserve(numThreads);
+    threatPools.reserve(numThreads);
+    for (int i = 0; i < numThreads; i++) {
+        ctxs.push_back(g_defaultCtx);   // 拷贝配置型字段（tt 指针等）
+        ctxs.back().tt = (i == 0) ? g_ttRefStorage : g_ttSmpStorage;
+        threatPools.emplace_back(THREAT_TT_SIZE);   //  threat TT 每线程私有
+        ctxs.back().threatTT = threatPools.back().data();
+        ctxs.back().nodesVisited = 0;   // 搜索状态清零（拷贝来的可能是上轮残留）
+        ctxs.back().timedOut = false;
+        ctxs.back().inPostScan = false;
+    }
+
+    std::vector<Board> boards(numThreads, board);   // Board 可拷贝（定长数组）
+    std::vector<SearchResult> results(numThreads);
+    std::vector<std::thread> threads;
+    threads.reserve(numThreads);
+    for (int i = 0; i < numThreads; i++) {
+        threads.emplace_back([&ctxs, &boards, &results, i]() {
+            t_ctxPtr = &ctxs[i];   // thread_local：本线程后续全部访问走私有上下文
+            results[i] = findBestMove(boards[i]);
+        });
+    }
+    for (auto& t : threads) t.join();
+
+    int best = 0;   // 参照线程的结果是基准（平局的归属）
+    int improved = -1;
+    for (int i = 1; i < numThreads; i++) {
+        const SearchResult& a = results[best];
+        const SearchResult& b = results[i];
+        const bool strictlyBetter =
+            b.bestScore > a.bestScore ||
+            (b.bestScore == a.bestScore && b.searchDepth > a.searchDepth);
+        if (strictlyBetter) { best = i; improved = i; }
+    }
+    // 胜者统计落到默认上下文（getLastSearch* 的读取处）
+    g_defaultCtx.lastSearchDepth = results[best].searchDepth;
+    g_defaultCtx.lastSearchNodes = results[best].nodesVisited;
+    g_defaultCtx.lastSearchTimeMs = results[best].elapsedMs;
+    g_defaultCtx.lastSearchScore = results[best].bestScore;
+    // 合并决策供测量记录（辅助线程是否贡献了严格更优）
+    g_parallelMergeInfo = improved >= 0 ? (numThreads * 100 + improved) : 0;
+    return results[best];
+}
+#else
+SearchResult findBestMoveParallel(Board& board, int numThreads) {
+    (void)numThreads;
+    return findBestMove(board);   // wasm：无 SAB/COOP-COEP 条件，退回单线程
+}
+#endif
