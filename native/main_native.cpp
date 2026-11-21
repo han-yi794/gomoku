@@ -8,7 +8,11 @@
 //                                                    — 播棋后搜索（坐标 0..14，(列,行)）
 //   gomoku_cli selfplay [--threads N] [--budget MS] — 机机对局到终局（打印棋谱）
 //   gomoku_cli nps [threads] [budget]               — 单步纯节点吞吐测量
+//   gomoku_cli dump [--games N] [--budget MS] [--threads T] [--out FILE]
+//                                                    — 自对弈采集 NNUE 蒸馏数据
+//                                                     （每行：score TAB 特征向量）
 #include "engine.h"
+#include "nnue.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -60,6 +64,19 @@ int main(int argc, char** argv) {
     }
     const std::string cmd = argv[1];
 
+    // --nnue <path>：所有命令通用的权重加载（先于各解析；默认启用网络路径）
+    for (int i = 2; i < argc; i++) {
+        const std::string a = argv[i];
+        const char* path = nullptr;
+        if (a == "--nnue" && i + 1 < argc) path = argv[++i];
+        else if (a.rfind("--nnue=", 0) == 0) path = a.c_str() + 7;
+        if (path) {
+            if (!Nnue::nnueLoad(path)) return 1;
+            Nnue::nnueSetEnabled(true);
+            std::fprintf(stderr, "[cli] nnue enabled\n");
+        }
+    }
+
     // bench [threads]：位置参数，先于通用解析处理
     // nps [threads] [budget]：位置参数，先于通用解析处理
     if (cmd == "nps") {
@@ -79,6 +96,120 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // match：古典 vs NNUE 同时限对局（换先各半），A/B 判定「不劣于旧」
+    if (cmd == "match") {
+        int games = 10;
+        int matchBudget = 20000;
+        int matchThreads = 1;
+        std::string nnuePath;
+        for (int i = 2; i < argc; i++) {
+            const std::string a = argv[i];
+            if (a == "--games" && i + 1 < argc) games = std::atoi(argv[++i]);
+            else if (a.rfind("--games=", 0) == 0) games = std::atoi(a.c_str() + 8);
+            else if (a == "--budget" && i + 1 < argc) matchBudget = std::atoi(argv[++i]);
+            else if (a == "--threads" && i + 1 < argc) matchThreads = std::atoi(argv[++i]);
+            else if (a == "--nnue" && i + 1 < argc) nnuePath = argv[++i];
+            else if (a.rfind("--budget=", 0) == 0) matchBudget = std::atoi(a.c_str() + 9);
+            else if (a.rfind("--threads=", 0) == 0) matchThreads = std::atoi(a.c_str() + 10);
+            else if (a.rfind("--nnue=", 0) == 0) nnuePath = a.c_str() + 7;
+            else { std::fprintf(stderr, "bad argument: %s\n", a.c_str()); return 1; }
+        }
+        if (nnuePath.empty()) { std::fprintf(stderr, "match needs --nnue <file>\n"); return 1; }
+
+        int classicalWins = 0, nnueWins = 0, draws = 0;
+        for (int g = 0; g < games; g++) {
+            const bool classicalIsBlack = (g % 2 == 0);
+            Board board;
+            board.reset();
+            clearSearchTables();
+            setDifficulty(Difficulty::HARD);
+            setTimeBudget(matchBudget);
+            int winner = 0;
+            while (board.moveCount() < TOTAL_CELLS) {
+                const int player = board.getPlayer();
+                const bool useNnue = (player == BLACK) != classicalIsBlack;  // 异或：黑方持古典?
+                Nnue::nnueSetEnabled(useNnue);
+                const SearchResult r = findBestMoveParallel(board, matchThreads);
+                if (r.bestX < 0) break;
+                board.makeMove(r.bestX, r.bestY);
+                if (board.checkWin(r.bestX, r.bestY) != 0) { winner = player; break; }
+            }
+            Nnue::nnueSetEnabled(false);
+            if (winner == 0) draws++;
+            else if ((winner == BLACK) == classicalIsBlack) classicalWins++;
+            else nnueWins++;
+            std::fprintf(stderr, "game %d/%d: %s (classical black=%d)\n", g + 1, games,
+                         winner == 0 ? "draw" : (winner == BLACK ? "black wins" : "white wins"),
+                         classicalIsBlack ? 1 : 0);
+        }
+        std::printf("match: classical=%d nnue=%d draws=%d (of %d)\n",
+                    classicalWins, nnueWins, draws, games);
+        return 0;
+    }
+
+    // dump：自对弈采集 NNUE 蒸馏数据（每步：局面特征 + 该局面引擎根评分）
+    if (cmd == "dump") {
+        int games = 10;
+        int dumpBudget = 20000;
+        int dumpThreads = 1;
+        std::string outPath = "nnue_dump.txt";
+        for (int i = 2; i < argc; i++) {
+            const std::string a = argv[i];
+            if (a == "--games" && i + 1 < argc) games = std::atoi(argv[++i]);
+            else if (a.rfind("--games=", 0) == 0) games = std::atoi(a.c_str() + 8);
+            else if (a == "--budget" && i + 1 < argc) dumpBudget = std::atoi(argv[++i]);
+            else if (a == "--threads" && i + 1 < argc) dumpThreads = std::atoi(argv[++i]);
+            else if (a == "--out" && i + 1 < argc) outPath = argv[++i];
+            else if (a == "--nnue") { ++i; }        // 已被预扫描处理
+            else if (a.rfind("--nnue=", 0) == 0) {}
+            else if (a.rfind("--budget=", 0) == 0) dumpBudget = std::atoi(a.c_str() + 9);
+            else if (a.rfind("--threads=", 0) == 0) dumpThreads = std::atoi(a.c_str() + 10);
+            else if (a.rfind("--out=", 0) == 0) outPath = a.c_str() + 6;
+            else {
+                std::fprintf(stderr, "bad argument: %s\n", a.c_str());
+                return 1;
+            }
+        }
+        std::FILE* f = std::fopen(outPath.c_str(), "w");
+        if (!f) {
+            std::fprintf(stderr, "cannot open %s\n", outPath.c_str());
+            return 1;
+        }
+        std::fprintf(f, "# NNUE dump v0: label=root search score (side-to-move perspective)\n");
+        std::fprintf(f, "# features: [us 8 pattern types x 3 zones][opp 8x3][stm_white=1][move_count]\n");
+        std::fprintf(f, "# dim=%d score<TAB>f0 f1 ... f%d\n", Nnue::FEATURE_DIM, Nnue::FEATURE_DIM - 1);
+
+        int feats[Nnue::FEATURE_DIM];
+        long long lines = 0;
+        for (int g = 0; g < games; g++) {
+            Board board;
+            board.reset();
+            clearSearchTables();
+            setDifficulty(Difficulty::HARD);
+            setTimeBudget(dumpBudget);
+            while (board.moveCount() < TOTAL_CELLS) {
+                Nnue::extractFeatures(board, feats);
+                const SearchResult r = findBestMoveParallel(board, dumpThreads);
+                if (r.bestX < 0) break;
+                // 标签行：当前局面的根评分（走子方视角）；终局分可能是 mate 分，训练端处理
+                std::fprintf(f, "%lld\t", (long long)r.bestScore);
+                for (int i = 0; i < Nnue::FEATURE_DIM; i++) {
+                    std::fprintf(f, "%s%d", i ? " " : "", feats[i]);
+                }
+                std::fprintf(f, "\n");
+                lines++;
+                board.makeMove(r.bestX, r.bestY);
+                if (board.checkWin(r.bestX, r.bestY) != 0) break;   // 分出了胜负即止
+            }
+            std::fprintf(stderr, "game %d/%d done (%d moves, %lld lines total)\n",
+                         g + 1, games, board.moveCount(), lines);
+        }
+        std::fclose(f);
+        std::printf("dump done: %s (%lld lines, dim=%d)\n", outPath.c_str(), lines, Nnue::FEATURE_DIM);
+        return 0;
+    }
+
+    
     // 公共参数解析
     int threads = 1;
     int budget = 20000;
@@ -87,6 +218,8 @@ int main(int argc, char** argv) {
         const std::string a = argv[i];
         // bench 的位置线程参数已被快路消费，通用解析跳过它
         if (cmd == "bench" && i == 2 && std::isdigit((unsigned char)a[0])) continue;
+        if (a == "--nnue") { ++i; continue; }       // 已被预扫描处理
+        if (a.rfind("--nnue=", 0) == 0) continue;
         if (a == "--threads" && i + 1 < argc) threads = std::atoi(argv[++i]);
         else if (a == "--budget" && i + 1 < argc) budget = std::atoi(argv[++i]);
         else if (a.rfind("--threads=", 0) == 0) threads = std::atoi(a.c_str() + 10);
@@ -171,6 +304,6 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    std::fprintf(stderr, "unknown command: %s\n", cmd.c_str());
+std::fprintf(stderr, "unknown command: %s\n", cmd.c_str());
     return 1;
 }

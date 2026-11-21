@@ -25,3 +25,7 @@ _parked/
 
 # 原生 CLI 构建产物（源码 native/ 入库，exe 本地构建）
 native/gomoku_cli.exe
+
+
+# NNUE spike：训练数据可经 CLI dump 再生，权重与训练器入库
+native/nnue/*.txt

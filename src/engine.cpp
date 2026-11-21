@@ -4,6 +4,9 @@
 
 #include "engine.h"
 #include <atomic>
+#ifdef GOMOKU_WITH_NNUE
+#include "nnue.h"   // NNUE spike：仅原生构建定义 GOMOKU_WITH_NNUE 时启用（wasm 不涉及）
+#endif
 #include <cstdio>
 #include <cmath>
 #include <cstdlib>
@@ -430,7 +433,13 @@ static int64_t patternScoreAfterPlace(const Board& board, int x, int y, int ston
 
 // 完整评估（当前视角的分数）。棋型用双色单遍扫描、中心分合并成一趟——
 // 与原实现（两次 evaluatePatterns + 两次 evaluateCenterScore）逐位一致。
+// NNUE spike（2026-11-21）：flag 关闭时走下方古典路径（默认）；开启时整条替换为
+// 网络输出（v0 不做 blend——A/B 匹配赛先验证「纯 NNUE 值不值得」）。换评估必须
+// 重标定全部夹具（AGENTS.md 硬规矩），故默认关。
 int64_t evaluatePosition(const Board& board) {
+#ifdef GOMOKU_WITH_NNUE
+    if (Nnue::nnueEnabled()) return Nnue::nnueEvaluate(board);
+#endif
     int player = board.getPlayer();
     
     PatternBase black, white;
