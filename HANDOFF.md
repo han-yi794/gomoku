@@ -19,7 +19,7 @@
 
 ## 待办（按优先级）
 
-1. **NNUE Spike 执行**（方案已定稿于 AGENTS.md「NNUE 预研」）：native CLI `dump` 命令（selfplay 特征+评分数据）→ numpy 训练极小 FC → int8 量化权重 → `evaluatePosition` flag 分支 → 同时限匹配赛判定。默认关闭、古典兜底，跑通全链后再评估投入
+1. **NNUE Spike 判定**（stage 1-3 已落地入库，20 局同时限 A/B 匹配赛跑定中）：数据/numpy 训练/int8 推理/`--nnue` flag 全链已通；4 局试赛 NNUE 2:1 古典积极；跑完 20 局按「不劣于旧」判定投入 or 迭代特征（活三跳变体/方向特征）。默认关闭、古典兜底
 2. **b1-B 之后的引擎选项**：搜索效率（Rapfi 的 mate distance pruning——分值限界，已借鉴其 mate-in-value 编码未引剪枝）；VCT 补枪实证收益（当前零拒绝记录，需深链杀靶局面）；game12-m13 深度边界的逐层 instrumentation（MT 重构后 wasm 在该点 21k vs 旧 44k 节点/s，着法未变、原因待查——跨编译器节点数逐位相同证明无逻辑回归）
 3. ~~多线程~~：已落地（2026-11-19，保守 SMP + 原生 CLI，详见 AGENTS.md 契约 #11）
 4. ~~发布 b1-B 到 Pages~~：已完成（build 20261118a 线上，SHA256 核对一致）

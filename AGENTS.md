@@ -98,3 +98,12 @@
   4. 训练：Python 3.13；网络极小先用纯 numpy SGD（不引 PyTorch），跑通再迁 PyTorch CPU；
   5. 集成：evaluatePosition 加 NNUE 分支（flag 控制），古典默认；native CLI 匹配赛（同时限古典 vs NNUE）判定；
   6. 纪律：换评估=重标定全部夹具（硬规矩）；发布前必须「不劣于旧」；夹具漂移逐项对手侧核验。
+
+## NNUE spike 实测（2026-11-21，stage 1-3 已落地，stage 4 判定进行中）
+
+- 基建已入库：`src/nnue.{h,cpp}`（单一特征规格 + int8 加载/反量化前向）、native CLI `dump`/`match` 命令、`native/nnue/train.py`（纯 numpy）、`native/nnue/nnue_v1.bin`（50->32->16->1）。
+- 数据：40 局 200ms 自对弈 = 2771 个标注局面（root search score 作标签，tanh(score/1e6) 映射）。
+- 训练：4000 迭代 val_mse 0.235（基线 0.66）——小样本已学到信号。
+- 集成：`--nnue <file>` 加载后 `evaluatePosition` 整条替换为网络输出；**默认关**，wasm 构建完全不涉及（`GOMOKU_WITH_NNUE` 仅原生定义；wasm 重建产物逐位不变已验证）。
+- 首场 A/B（4 局 2s）：NNUE 2 : 1 古典 + 1 和——方向积极但样本不足；20 局同时限匹配赛进行中，以它的结果定 stage 4（投入 or 回滚特征版本）。
+- 复现：`pwsh native\build_native.ps1` → `gomoku_cli.exe dump --games 40 --budget 200 --out d.txt` → `python native/nnue/train.py --data d.txt --out nnue_v1.bin` → `gomoku_cli.exe match --games 20 --budget 2000 --nnue nnue_v1.bin`。
