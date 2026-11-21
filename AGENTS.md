@@ -106,4 +106,6 @@
 - 训练：4000 迭代 val_mse 0.235（基线 0.66）——小样本已学到信号。
 - 集成：`--nnue <file>` 加载后 `evaluatePosition` 整条替换为网络输出；**默认关**，wasm 构建完全不涉及（`GOMOKU_WITH_NNUE` 仅原生定义；wasm 重建产物逐位不变已验证）。
 - 首场 A/B（4 局 2s）：NNUE 2 : 1 古典 + 1 和——方向积极但样本不足；20 局同时限匹配赛进行中，以它的结果定 stage 4（投入 or 回滚特征版本）。
+- **v0 判定（20 局 2s）：古典 6 : 5 NNUE + 9 和**——持平略后；管线全通、教师知识已被蒸馏到接近，值得加码。
+- v1 特征（62 维：+下一手成活四/冲四威胁计数）+ 120 局 300ms 新数据（12621 样本）：val_mse 0.235 -> 0.174；v2 权重已入库，A/B 判定留待比赛结果。已知瑕疵：输出层无界（val 预测出现 +5.4/-2.9 越界），下轮训练加输出截断。
 - 复现：`pwsh native\build_native.ps1` → `gomoku_cli.exe dump --games 40 --budget 200 --out d.txt` → `python native/nnue/train.py --data d.txt --out nnue_v1.bin` → `gomoku_cli.exe match --games 20 --budget 2000 --nnue nnue_v1.bin`。
