@@ -1,7 +1,10 @@
-// nnue.cpp - NNUE spike 特征提取（v0）
+// nnue.cpp - NNUE spike 特征提取与量化推理
 //
 // 复用与 evaluatePatterns 相同的「序列扫描」语义（只在序列起点计数、看两端开放
 // 情况），但按 8 类棋型 x 3 区分别计数，并区分双方。连续段归属区 = 段中点所在区。
+// v1 起加入「下一手威胁」计数（跳三/跳四盲区的直接代理）。
+//
+// 特征规格只此一处定义（nnue.h）：dump（native CLI）与量化推理共用，杜绝漂移。
 #include "nnue.h"
 
 #include <cmath>
@@ -12,7 +15,7 @@
 namespace Nnue {
 
 const char* patternName(int type) {
-    static const char* names[PATTERN_NB] = {"five", "o4", "c4", "o3", "s3", "o2", "s2", "o1"};
+    static const char* names[PATTERN_NB] = {"five", "o4", "c4", "o3", "s3", "o2", "s2", "o1", "o4t", "c4t"};
     return (type >= 0 && type < PATTERN_NB) ? names[type] : "?";
 }
 
@@ -41,6 +44,33 @@ static inline int classifyRun(int count, int openEnds) {
         case 1: return openEnds == 2 ? OPEN1 : -1;
         default: return -1;
     }
+}
+
+// 试在 (x,y) 落子后，沿方向 d 是否形成四及两端开放情况（下一手威胁计数用）。
+// 返回：2=活四威胁(两端空)或直接成五，1=冲四威胁(一端空)，0=无
+static int fourThreatOn(const Board& b, int x, int y, int player, int d) {
+    int count = 1;  // 包含试落点
+    int cx = x + DX[d], cy = y + DY[d];
+    while (b.inBounds(cx, cy) && b.get(cx, cy) == player) { count++; cx += DX[d]; cy += DY[d]; }
+    const bool aopen = b.inBounds(cx, cy) && b.get(cx, cy) == EMPTY;
+    cx = x - DX[d]; cy = y - DY[d];
+    while (b.inBounds(cx, cy) && b.get(cx, cy) == player) { count++; cx -= DX[d]; cy -= DY[d]; }
+    const bool bopen = b.inBounds(cx, cy) && b.get(cx, cy) == EMPTY;
+    if (count >= 5) return 2;                 // 直接成五也是最强威胁
+    if (count == 4) return aopen && bopen ? 2 : (aopen || bopen ? 1 : 0);
+    return 0;
+}
+
+// 空点周边是否有子（威胁只可能在已有棋子附近形成）
+static bool nearAnyStone(const Board& b, int x, int y, int radius) {
+    for (int dy = -radius; dy <= radius; dy++) {
+        for (int dx = -radius; dx <= radius; dx++) {
+            if (dx == 0 && dy == 0) continue;
+            const int nx = x + dx, ny = y + dy;
+            if (b.inBounds(nx, ny) && b.get(nx, ny) != EMPTY) return true;
+        }
+    }
+    return false;
 }
 
 void extractFeatures(const Board& board, int* out) {
@@ -79,11 +109,31 @@ void extractFeatures(const Board& board, int* out) {
                     if (type < 0) continue;
 
                     // 段中点定区（离散中点，避免浮点）
-                    const int mx = (x + (cx - dx) ) / 2;
-                    const int my = (y + (cy - dy) ) / 2;
+                    const int mx = (x + (cx - dx)) / 2;
+                    const int my = (y + (cy - dy)) / 2;
                     const int zone = zoneOf(mx, my);
                     base[type * ZONE_NB + zone]++;
                 }
+            }
+        }
+    }
+
+    // v1：下一手威胁（每个空点试落子的最强威胁；只查周边有子的点，成本可控）
+    for (int side = 0; side < 2; side++) {
+        const int player = side == 0 ? board.getPlayer()
+                                     : (board.getPlayer() == BLACK ? WHITE : BLACK);
+        int* base = out + side * (PATTERN_NB * ZONE_NB);
+        for (int y = 0; y < BOARD_SIZE; y++) {
+            for (int x = 0; x < BOARD_SIZE; x++) {
+                if (board.get(x, y) != EMPTY) continue;
+                if (!nearAnyStone(board, x, y, NEIGHBOR_RADIUS)) continue;
+                int best = 0;   // 该点的最强威胁（活四 > 冲四）
+                for (int d = 0; d < 4; d++) {
+                    const int t = fourThreatOn(board, x, y, player, d);
+                    if (t > best) best = t;
+                }
+                if (best == 2) base[O4THREAT * ZONE_NB + zoneOf(x, y)]++;
+                else if (best == 1) base[C4THREAT * ZONE_NB + zoneOf(x, y)]++;
             }
         }
     }
@@ -158,9 +208,7 @@ bool nnueLoad(const char* path) {
     std::fclose(f);
     g_dimIn = (int)dIn;
     g_loaded = true;
-    char desc[128];
-    std::snprintf(desc, sizeof(desc), "[nnue] loaded %s: %d->%d->%d->%d", path, dims[0], dims[1], dims[2], dims[3]);
-    std::fprintf(stderr, "%s\n", desc);
+    std::fprintf(stderr, "[nnue] loaded %s: %d->%d->%d->%d\n", path, dims[0], dims[1], dims[2], dims[3]);
     return true;
 }
 
@@ -182,7 +230,8 @@ int64_t nnueEvaluate(const Board& board) {
         cur[i] = ((float)feats[i] - g_mean[i]) / s;
     }
 
-    for (const Layer& L : g_layers) {
+    for (size_t li = 0; li < g_layers.size(); li++) {
+        const Layer& L = g_layers[li];
         std::vector<float> next(L.out, 0.0f);
         for (int o = 0; o < L.out; o++) {
             float acc = L.b[o];
@@ -191,7 +240,7 @@ int64_t nnueEvaluate(const Board& board) {
             next[o] = acc;
         }
         // 最后一层线性，隐藏层 ReLU
-        if (&L != &g_layers.back()) {
+        if (li + 1 < g_layers.size()) {
             for (int o = 0; o < L.out; o++) if (next[o] < 0.0f) next[o] = 0.0f;
         }
         cur = std::move(next);
