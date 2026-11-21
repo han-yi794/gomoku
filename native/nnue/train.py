@@ -28,8 +28,8 @@ def load_dump(path):
             feats.append([float(v) for v in feat_s.split()])
     y = np.array(labels, dtype=np.float64)
     x = np.array(feats, dtype=np.float64)
-    if x.shape[1] != 50:
-        raise SystemExit(f"unexpected feature dim {x.shape[1]} (expect 50)")
+    if x.shape[1] < 10:
+        raise SystemExit(f"unexpected feature dim {x.shape[1]}")
     return x, y
 
 
@@ -62,13 +62,15 @@ class Adam:
 
 def forward(params, x, train=True):
     # params: [W1,b1,W2,b2,W3,b3]; 返回 (cache, output)
+    # 输出层：1.2*tanh(z/1.2) 有界（与引擎推理端同式；防越界预测）
     W1, b1, W2, b2, W3, b3 = params
     z1 = x @ W1 + b1
     a1 = np.maximum(z1, 0.0)
     z2 = a1 @ W2 + b2
     a2 = np.maximum(z2, 0.0)
-    out = a2 @ W3 + b3
-    cache = (x, z1, a1, z2, a2)
+    z3 = a2 @ W3 + b3
+    out = 1.2 * np.tanh(z3 / 1.2)
+    cache = (x, z1, a1, z2, a2, z3)
     return cache, out
 
 
@@ -78,11 +80,13 @@ def loss_and_grads(params, x, t):
     loss = float(np.mean(diff * diff))
     n = x.shape[0]
 
-    x_in, z1, a1, z2, a2 = cache
+    x_in, z1, a1, z2, a2, z3 = cache
     dout = 2.0 * diff / n
-    gW3 = a2.T @ dout
-    gb3 = dout.sum(axis=0)
-    da2 = dout @ W3.T if (W3 := params[4]) is not None else None
+    # 输出层 tanh 的导数：do/dz3 = 1 - (o/1.2)^2
+    dz3 = dout * (1.0 - (out / 1.2) ** 2)
+    gW3 = a2.T @ dz3
+    gb3 = dz3.sum(axis=0)
+    da2 = dz3 @ W3.T if (W3 := params[4]) is not None else None
     dz2 = da2 * (z2 > 0)
     gW2 = a1.T @ dz2
     gb2 = dz2.sum(axis=0)

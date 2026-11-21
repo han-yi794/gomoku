@@ -111,4 +111,6 @@
 - **v2 判定（20 局 2s，同时限换先）：NNUE 15 : 1 古典 + 4 和——完胜。**
   - 归因：NNUE 引擎每节点吞吐仅古典一半（38.9k vs 78.6k/s——推理实现每次 eval 有 3 次 vector 分配，待优化），**慢一倍的搜索仍 15:1，评估质量增益压倒性**。
   - 结论：管线价值证实，进入 v3：更深标签（1s 子集）+ 输出截断 + 推理免分配提速 + 更多数据；然后 20s 档复测 A/B 与夹具，为默认启用做准备（默认启用 = 重标定全部夹具 + 对手侧核验，硬规矩）。
+- v3：混合标签（12.6k shallow 300ms + 3.5k deep 800ms = 16144 样本）+ train.py 输出截断（1.2*tanh）+ 引擎推理同步截断与免分配前向（val_mse 0.174 -> 0.150，预测严格有界 ±1.2）。A/B 复测进行中。
+- **增量累加器（后续任务，设计已理清未实现）**：NNUE 引擎吞吐仅古典一半（38.9k vs 78.6k/s），瓶颈是每次 eval 全盘重算特征。设计：(1) 段增量——只重算穿过落子点的 4 条线（旧段减/新段加，merged 态区分 push/pop，扫描绕点进行、不依赖棋盘是否已含该子）；(2) 威胁增量——只重算 4 方向上 ≤4 格内的空点，用「虚拟落子」双态差分（virtual ON/OFF）、两方都算；(3) us/opp 块按行棋方归属，push 前/pop 后各做一次整块互换 + stm 翻转，所有 delta 在单一归因空间内施加；(4) 差分测试（nnueVerifyAccumulator）证明与全量提取逐位一致后才接入 negamax 热路径。实现曾在会话中两次写乱，已回滚——宁可没有，不要半成品。
 - 复现：`pwsh native\build_native.ps1` → `gomoku_cli.exe dump --games 40 --budget 200 --out d.txt` → `python native/nnue/train.py --data d.txt --out nnue_v1.bin` → `gomoku_cli.exe match --games 20 --budget 2000 --nnue nnue_v1.bin`。

@@ -223,27 +223,34 @@ int64_t nnueEvaluate(const Board& board) {
     int feats[FEATURE_DIM];
     extractFeatures(board, feats);
 
-    // 标准化 -> 第一层输入
-    std::vector<float> cur(g_dimIn);
+    // 免分配前向：定长栈缓冲（维度上限写死；导出头里有校验）。
+    constexpr int MAX_DIM = 128;
+    float buf0[MAX_DIM], buf1[MAX_DIM];
+    if (g_dimIn > MAX_DIM) return 0;
     for (int i = 0; i < g_dimIn; i++) {
         const float s = g_std[i] > 1e-6f ? g_std[i] : 1.0f;
-        cur[i] = ((float)feats[i] - g_mean[i]) / s;
+        buf0[i] = ((float)feats[i] - g_mean[i]) / s;
     }
+    float* cur = buf0;
+    float* next = buf1;
 
     for (size_t li = 0; li < g_layers.size(); li++) {
         const Layer& L = g_layers[li];
-        std::vector<float> next(L.out, 0.0f);
+        if (L.out > MAX_DIM) return 0;
         for (int o = 0; o < L.out; o++) {
             float acc = L.b[o];
             const float* w = &L.w[(size_t)o * L.in];
             for (int i = 0; i < L.in; i++) acc += w[i] * cur[i];
             next[o] = acc;
         }
-        // 最后一层线性，隐藏层 ReLU
         if (li + 1 < g_layers.size()) {
+            // 隐藏层 ReLU
             for (int o = 0; o < L.out; o++) if (next[o] < 0.0f) next[o] = 0.0f;
+        } else {
+            // 输出层 1.2*tanh(z/1.2) 有界（与 train.py 同式；防越界预测）
+            for (int o = 0; o < L.out; o++) next[o] = 1.2f * std::tanh(next[o] / 1.2f);
         }
-        cur = std::move(next);
+        float* tmp = cur; cur = next; next = tmp;
     }
     return (int64_t)std::lround(cur[0] * (float)NNUE_EVAL_SCALE);
 }
