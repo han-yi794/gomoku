@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -152,6 +153,7 @@ int main(int argc, char** argv) {
         int games = 10;
         int dumpBudget = 20000;
         int dumpThreads = 1;
+        int openMoves = 0;
         std::string outPath = "nnue_dump.txt";
         for (int i = 2; i < argc; i++) {
             const std::string a = argv[i];
@@ -160,6 +162,7 @@ int main(int argc, char** argv) {
             else if (a == "--budget" && i + 1 < argc) dumpBudget = std::atoi(argv[++i]);
             else if (a == "--threads" && i + 1 < argc) dumpThreads = std::atoi(argv[++i]);
             else if (a == "--out" && i + 1 < argc) outPath = argv[++i];
+            else if (a == "--open" && i + 1 < argc) openMoves = std::atoi(argv[++i]);
             else if (a == "--nnue") { ++i; }        // 已被预扫描处理
             else if (a.rfind("--nnue=", 0) == 0) {}
             else if (a.rfind("--budget=", 0) == 0) dumpBudget = std::atoi(a.c_str() + 9);
@@ -187,6 +190,32 @@ int main(int argc, char** argv) {
             clearSearchTables();
             setDifficulty(Difficulty::HARD);
             setTimeBudget(dumpBudget);
+            // 随机开局（--open N）：每局先随机走 N 手再进入自对弈——修正深标签
+            // 对局过短的分布偏移。确定性 RNG（同种子同数据）。
+            std::mt19937 rng((unsigned)g * 2654435761u + 12345u);
+            for (int om = 0; om < openMoves; om++) {
+                const int player = board.getPlayer();
+                const int opp = (player == 1) ? 2 : 1;
+                std::vector<std::pair<int, int>> cells;
+                for (int y = 0; y < BOARD_SIZE; y++) {
+                    for (int x = 0; x < BOARD_SIZE; x++) {
+                        if (board.get(x, y) != 0) continue;
+                        bool near = false;
+                        for (int dy = -2; dy <= 2 && !near; dy++) {
+                            for (int dx = -2; dx <= 2; dx++) {
+                                if (dx == 0 && dy == 0) continue;
+                                if (board.inBounds(x + dx, y + dy) && board.get(x + dx, y + dy) != 0) { near = true; break; }
+                            }
+                        }
+                        if (near) cells.emplace_back(x, y);
+                    }
+                }
+                if (cells.empty()) break;
+                const auto& cell = cells[rng() % cells.size()];
+                board.makeMove(cell.first, cell.second);
+                (void)opp;
+                if (board.checkWin(cell.first, cell.second) != 0) break;
+            }
             while (board.moveCount() < TOTAL_CELLS) {
                 Nnue::extractFeatures(board, feats);
                 const SearchResult r = findBestMoveParallel(board, dumpThreads);

@@ -246,10 +246,9 @@ int64_t nnueEvaluate(const Board& board) {
         if (li + 1 < g_layers.size()) {
             // 隐藏层 ReLU
             for (int o = 0; o < L.out; o++) if (next[o] < 0.0f) next[o] = 0.0f;
-        } else {
-            // 输出层 1.2*tanh(z/1.2) 有界（与 train.py 同式；防越界预测）
-            for (int o = 0; o < L.out; o++) next[o] = 1.2f * std::tanh(next[o] / 1.2f);
         }
+        // 输出层线性（无截断）：隔离实验判定截断会把 15:1 打到 8:5——无界输出的
+        // 「过自信」信号（可达 ±5.4）正是 NNUE 强战术性的来源，不要截断。
         float* tmp = cur; cur = next; next = tmp;
     }
     return (int64_t)std::lround(cur[0] * (float)NNUE_EVAL_SCALE);
