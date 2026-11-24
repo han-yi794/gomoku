@@ -126,8 +126,14 @@ struct SearchContext {
     int vctWinMovesLeft = 0;           // 必胜证明节点的剩余威胁手数（杀距比较用）
     int vcfNodeLimit = 3000000;        // VCF 节点上限兜底
     int vctNodeLimit = 600000;         // VCT 节点上限兜底（45 万节点 ~0.85s）
+#ifdef GOMOKU_WITH_NNUE
+    Nnue::Accumulator* nnueAcc = nullptr;   // NNUE 增量累加器（每线程一份；非空且网络开启时生效）
+#endif
 };
 static SearchContext g_defaultCtx{g_ttStorage, g_threatTTStorage};
+#ifdef GOMOKU_WITH_NNUE
+static Nnue::Accumulator g_defaultNnueAcc;         // 默认上下文（单线程/wasm）的累加器实例
+#endif
 // wasm 无 pthread：thread_local 会走模拟 TLS 慢路径（实测热路径吞吐 ~2x 拖慢），
 // 且指针间接本身也让 LLVM 无法静态寻址（每节点多两次内存往返）。单线程 wasm 直接
 // 以宏引用默认实例——热路径与旧全局变量版同速；原生并行构建才用 thread_local。
@@ -136,6 +142,9 @@ static SearchContext g_defaultCtx{g_ttStorage, g_threatTTStorage};
 #else
 static thread_local SearchContext* t_ctxPtr = &g_defaultCtx;
 static inline SearchContext& ctx() { return *t_ctxPtr; }
+#endif
+#ifdef GOMOKU_WITH_NNUE
+static bool g_nnueAccBound = (g_defaultCtx.nnueAcc = &g_defaultNnueAcc, true);   // 默认上下文绑定累加器
 #endif
 
 // ============= 置换表访问（无锁条目） =============
@@ -438,7 +447,32 @@ static int64_t patternScoreAfterPlace(const Board& board, int x, int y, int ston
 // 重标定全部夹具（AGENTS.md 硬规矩），故默认关。
 int64_t evaluatePosition(const Board& board) {
 #ifdef GOMOKU_WITH_NNUE
-    if (Nnue::nnueEnabled()) return Nnue::nnueEvaluate(board);
+    if (Nnue::nnueEnabled()) {
+        // 增量累加器就绪时走 O(1) 特征（差分测试已验证与全量提取逐位一致）；
+        // 否则回退全量提取（如 dump 路径、未接线上下文）。
+        if (ctx().nnueAcc) {
+            return Nnue::nnueEvaluateRaw(ctx().nnueAcc->features());
+        }
+#ifdef GOMOKU_NNUE_DEBUG_COMPARE
+        if (ctx().nnueAcc) {
+            int full[Nnue::FEATURE_DIM];
+            Nnue::extractFeatures(board, full);
+            const int* acc = ctx().nnueAcc->features();
+            for (int i = 0; i < Nnue::FEATURE_DIM; i++) {
+                if (acc[i] != full[i]) {
+                    std::fprintf(stderr, "[acc-diff] idx=%d acc=%d full=%d mv=%d hist:", i, acc[i], full[i], board.moveCount());
+                    for (int h = 0; h < board.moveCount(); h++) {
+                        const Move& m = board.getHistory(h);
+                        std::fprintf(stderr, " (%d,%d)", m.pos.x, m.pos.y);
+                    }
+                    std::fprintf(stderr, "\n");
+                    break;
+                }
+            }
+        }
+#endif
+        return Nnue::nnueEvaluate(board);
+    }
 #endif
     int player = board.getPlayer();
     
@@ -915,8 +949,11 @@ static int64_t negamax(Board& board, int64_t alpha, int64_t beta, int depth, uin
         // 落子并切换到对手回合
         int player = board.getPlayer();
         board.makeMove(move.pos.x, move.pos.y);
+#ifdef GOMOKU_WITH_NNUE
+        if (ctx().nnueAcc && Nnue::nnueEnabled()) ctx().nnueAcc->push(board, move.pos.x, move.pos.y, player);
+#endif
         uint64_t newHash = hash ^ zobrist[move.pos.x][move.pos.y][player];
-        
+
         // 检查是否获胜
         int64_t score;
         if (board.checkWin(move.pos.x, move.pos.y) != 0) {
@@ -924,9 +961,12 @@ static int64_t negamax(Board& board, int64_t alpha, int64_t beta, int depth, uin
         } else {
             score = -negamax(board, -beta, -alpha, depth - 1, newHash);
         }
-        
+
         // 收子并恢复当前回合
         board.undo();
+#ifdef GOMOKU_WITH_NNUE
+        if (ctx().nnueAcc && Nnue::nnueEnabled()) ctx().nnueAcc->pop(board, move.pos.x, move.pos.y, player);
+#endif
 
         // 超时后当前候选的结果不完整，不能覆盖已完成候选
         if (ctx().timedOut) break;
@@ -1449,6 +1489,11 @@ SearchResult findBestMove(Board& board) {
     ctx().nodesVisited = 0;
     ctx().timedOut = false;
     ctx().searchStartTime = std::chrono::steady_clock::now();
+#ifdef GOMOKU_WITH_NNUE
+    // 增量累加器就绪标志：网络开启时从当前局面全量构建一次，后续由 negamax 的
+    // push/pop 对称维护；嵌套 findBestMove（post-scan）会再次 reset，互不影响。
+    if (ctx().nnueAcc && Nnue::nnueEnabled()) ctx().nnueAcc->reset(board);
+#endif
     
     uint64_t rootHash = computeHash(board);
     
@@ -1688,8 +1733,11 @@ SearchResult findBestMove(Board& board) {
             // 落子并切换到对手回合
             int player = board.getPlayer();
             board.makeMove(move.pos.x, move.pos.y);
+#ifdef GOMOKU_WITH_NNUE
+            if (ctx().nnueAcc && Nnue::nnueEnabled()) ctx().nnueAcc->push(board, move.pos.x, move.pos.y, player);
+#endif
             uint64_t newHash = rootHash ^ zobrist[move.pos.x][move.pos.y][player];
-            
+
             // 搜索（窗口必须使用原始分：含战术加成的分会污染后续候选的窗口）
             int64_t score;
             if (board.checkWin(move.pos.x, move.pos.y) != 0) {
@@ -1697,9 +1745,12 @@ SearchResult findBestMove(Board& board) {
             } else {
                 score = -negamax(board, -WIN_THRESHOLD - 1, -bestRawInIter - 1, depth - 1, newHash);
             }
-            
+
             // 收子并恢复当前回合
             board.undo();
+#ifdef GOMOKU_WITH_NNUE
+            if (ctx().nnueAcc && Nnue::nnueEnabled()) ctx().nnueAcc->pop(board, move.pos.x, move.pos.y, player);
+#endif
 
             int64_t rawScore = score;
             if (move.tactical_adjustment != 0) {
@@ -2095,12 +2146,22 @@ SearchResult findBestMoveParallel(Board& board, int numThreads) {
 
     std::vector<SearchContext> ctxs;
     std::vector<std::vector<ThreatTTEntry>> threatPools;
+#ifdef GOMOKU_WITH_NNUE
+    std::vector<Nnue::Accumulator> accPool;   // 累加器存储（指针必须在累加器构造后取）
+#endif
     ctxs.reserve(numThreads);
     threatPools.reserve(numThreads);
+#ifdef GOMOKU_WITH_NNUE
+    accPool.reserve(numThreads);   // 必须先 reserve：emplace_back 重分配会令已存指针失效
+#endif
     for (int i = 0; i < numThreads; i++) {
         ctxs.push_back(g_defaultCtx);   // 拷贝配置型字段（tt 指针等）
         ctxs.back().tt = (i == 0) ? g_ttRefStorage : g_ttSmpStorage;
         threatPools.emplace_back(THREAT_TT_SIZE);   //  threat TT 每线程私有
+#ifdef GOMOKU_WITH_NNUE
+        accPool.emplace_back();                       // NNUE 累加器每线程一份（禁共享默认实例）
+        ctxs.back().nnueAcc = &accPool.back();
+#endif
         ctxs.back().threatTT = threatPools.back().data();
         ctxs.back().nodesVisited = 0;   // 搜索状态清零（拷贝来的可能是上轮残留）
         ctxs.back().timedOut = false;

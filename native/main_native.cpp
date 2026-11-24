@@ -149,6 +149,59 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // nnue-check：增量累加器差分测试（累加器 vs 全量提取，逐 push/pop 比对）
+    if (cmd == "nnue-check") {
+        int moves = 200;
+        int seed = 1;
+        int open = 0;
+        const char* fromMoves = nullptr;
+        for (int i = 2; i < argc; i++) {
+            const std::string a = argv[i];
+            if (a == "--moves" && i + 1 < argc) moves = std::atoi(argv[++i]);
+            else if (a == "--seed" && i + 1 < argc) seed = std::atoi(argv[++i]);
+            else if (a == "--open" && i + 1 < argc) open = std::atoi(argv[++i]);
+            else if (a == "--from" && i + 1 < argc) fromMoves = argv[++i];
+            else { std::fprintf(stderr, "bad argument: %s\n", a.c_str()); return 1; }
+        }
+        Board board;
+        board.reset();
+        if (fromMoves) {
+            const char* p = fromMoves;
+            while (*p) {
+                int fx, fy;
+                int n = 0;
+                if (std::sscanf(p, "%d,%d%n", &fx, &fy, &n) != 2) break;
+                board.makeMove(fx, fy);
+                p += n;
+                while (*p == ' ') p++;
+            }
+        }
+        // 可选：先随机走 open 手（覆盖中局局面），确定性 RNG
+        std::mt19937 rng((unsigned)seed * 747796405u + 2891336453u);
+        for (int om = 0; om < open; om++) {
+            std::vector<std::pair<int, int>> cells;
+            for (int y = 0; y < BOARD_SIZE; y++) {
+                for (int x = 0; x < BOARD_SIZE; x++) {
+                    if (board.get(x, y) != 0) continue;
+                    for (int dy = -2; dy <= 2; dy++) {
+                        for (int dx = -2; dx <= 2; dx++) {
+                            if (dx == 0 && dy == 0) continue;
+                            if (board.inBounds(x + dx, y + dy) && board.get(x + dx, y + dy) != 0) { cells.emplace_back(x, y); dx = 99; break; }
+                        }
+                    }
+                }
+            }
+            if (cells.empty()) break;
+            const auto& c = cells[rng() % cells.size()];
+            board.makeMove(c.first, c.second);
+        }
+        int detail = -1;
+        const int mismatches = Nnue::nnueVerifyAccumulator(board, moves, seed, &detail);
+        std::printf("nnue-check: moves=%d seed=%d open=%d mismatches=%d firstIdx=%d\n",
+                    moves, seed, open, mismatches, detail);
+        return mismatches == 0 ? 0 : 2;
+    }
+
     // dump：自对弈采集 NNUE 蒸馏数据（每步：局面特征 + 该局面引擎根评分）
     if (cmd == "dump") {
         int games = 10;

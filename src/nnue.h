@@ -67,8 +67,37 @@ void nnueSetEnabled(bool on);
 bool nnueEnabled();
 // 网络原始输出 × EVAL_SCALE 后的评估值（走子方视角，与 evaluatePosition 同口径）
 int64_t nnueEvaluate(const Board& board);
+// 直接从已算好的特征向量前向（增量累加器路径；跳过特征提取）
+int64_t nnueEvaluateRaw(const int* feats);
 
 constexpr int64_t NNUE_EVAL_SCALE = 1000000;   // 网络输出(~±1) -> 引擎评估分量程
+
+// ---- 增量特征累加器（NNUE 提速的关键路径） ----
+// 差分测试先行：nnueVerifyAccumulator 用随机走子序列逐 push/pop 与全量提取
+// 比对，零不一致才允许接入 negamax 热路径。
+class Accumulator {
+public:
+    void reset(const Board& board);             // 全量构建一次
+    void push(const Board& b, int x, int y, int player);   // 落子后调用（b 为落子后棋盘，扫描绕点进行）
+    void pop(const Board& b, int x, int y, int player);    // 悔棋后调用（b 为悔棋后棋盘，与 push 严格互逆）
+    const int* features() const { return feats_; }
+
+private:
+    int feats_[FEATURE_DIM] = {0};
+
+    // 归因空间 = attrSide0 所指颜色的「行棋方」；段/威胁 delta 在该空间内施加，
+    // 之后由调用方统一做 us/opp 整块互换（见 push/pop 注释）。
+    void runDelta(const Board& b, int x, int y, int player, int d, int attrSide0, bool merged, int sign);
+    // 对手邻接段的降级/恢复：落子方的子会把对手紧邻 (x,y) 的「活段」封成「眠段」
+    // （段本身不变，但 (x,y) 端的开放状态翻转 → 类型可能变，甚至不再计入）。
+    // demote=true：开放端 → 封闭（push）；false：封闭 → 开放（pop，与 push 互逆）。
+    void blockDelta(const Board& b, int x, int y, int blocker, int d, int attrSide0, bool demote);
+    void threatDelta(const Board& b, int x, int y, int mover, int attrSide0, bool fromVirtual, bool toVirtual, int sign);
+};
+
+// 差分测试：对 board 现状施加给定种子驱动的 make/undo 序列，比对累加器与全量提取。
+// 返回不一致次数（0 = 一致）；mismatchDetail 非空时给出首个不一致的特征索引。
+int nnueVerifyAccumulator(const Board& board, int moves, int seed, int* mismatchDetail = nullptr);
 
 }  // namespace Nnue
 
