@@ -64,6 +64,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     const std::string cmd = argv[1];
+    int level = 2;  // 难度档：--level 0..3（3=超长考）
 
     // --nnue <path>：所有命令通用的权重加载（先于各解析；默认启用网络路径）
     for (int i = 2; i < argc; i++) {
@@ -85,7 +86,7 @@ int main(int argc, char** argv) {
         const int b = (argc > 3 && std::isdigit((unsigned char)argv[3][0])) ? std::atoi(argv[3]) : 20000;
         Board board;
         board.reset();
-        setDifficulty(Difficulty::HARD);
+        setDifficulty(level == 0 ? Difficulty::EASY : level == 1 ? Difficulty::MEDIUM : level == 3 ? Difficulty::LONG : Difficulty::HARD);
         setTimeBudget(b);
         board.makeMove(7, 7);
         board.makeMove(8, 8);
@@ -123,7 +124,7 @@ int main(int argc, char** argv) {
             Board board;
             board.reset();
             clearSearchTables();
-            setDifficulty(Difficulty::HARD);
+            setDifficulty(level == 0 ? Difficulty::EASY : level == 1 ? Difficulty::MEDIUM : level == 3 ? Difficulty::LONG : Difficulty::HARD);
             setTimeBudget(matchBudget);
             int winner = 0;
             while (board.moveCount() < TOTAL_CELLS) {
@@ -188,7 +189,7 @@ int main(int argc, char** argv) {
             Board board;
             board.reset();
             clearSearchTables();
-            setDifficulty(Difficulty::HARD);
+            setDifficulty(level == 0 ? Difficulty::EASY : level == 1 ? Difficulty::MEDIUM : level == 3 ? Difficulty::LONG : Difficulty::HARD);
             setTimeBudget(dumpBudget);
             // 随机开局（--open N）：每局先随机走 N 手再进入自对弈——修正深标签
             // 对局过短的分布偏移。确定性 RNG（同种子同数据）。
@@ -249,6 +250,7 @@ int main(int argc, char** argv) {
         if (cmd == "bench" && i == 2 && std::isdigit((unsigned char)a[0])) continue;
         if (a == "--nnue") { ++i; continue; }       // 已被预扫描处理
         if (a.rfind("--nnue=", 0) == 0) continue;
+        if (a == "--level" && i + 1 < argc) { level = std::atoi(argv[++i]); continue; }
         if (a == "--threads" && i + 1 < argc) threads = std::atoi(argv[++i]);
         else if (a == "--budget" && i + 1 < argc) budget = std::atoi(argv[++i]);
         else if (a.rfind("--threads=", 0) == 0) threads = std::atoi(a.c_str() + 10);
@@ -273,7 +275,7 @@ int main(int argc, char** argv) {
             Board board;
             board.reset();
             clearSearchTables();   // 与 wasm 测试的 initGame 对齐：夹具间 TT 不互渗
-            setDifficulty(Difficulty::HARD);
+            setDifficulty(level == 0 ? Difficulty::EASY : level == 1 ? Difficulty::MEDIUM : level == 3 ? Difficulty::LONG : Difficulty::HARD);
             setTimeBudget(20000);
             for (int i = 0; i < fx.n; i++) board.makeMove(fx.line[i].first, fx.line[i].second);
             SearchResult r = findBestMoveParallel(board, threads);
@@ -294,7 +296,7 @@ int main(int argc, char** argv) {
     if (cmd == "search") {
         Board board;
         board.reset();
-        setDifficulty(Difficulty::HARD);
+        setDifficulty(level == 0 ? Difficulty::EASY : level == 1 ? Difficulty::MEDIUM : level == 3 ? Difficulty::LONG : Difficulty::HARD);
         setTimeBudget(budget);
         for (const auto& m : moves) {
             if (!board.makeMove(m.first, m.second)) {
@@ -312,7 +314,7 @@ int main(int argc, char** argv) {
     if (cmd == "selfplay") {
         Board board;
         board.reset();
-        setDifficulty(Difficulty::HARD);
+        setDifficulty(level == 0 ? Difficulty::EASY : level == 1 ? Difficulty::MEDIUM : level == 3 ? Difficulty::LONG : Difficulty::HARD);
         setTimeBudget(budget);
         std::printf("# selfplay threads=%d budget=%dms\n", threads, budget);
         int ply = 0;
