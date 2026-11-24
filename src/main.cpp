@@ -3,6 +3,7 @@
 
 #include <emscripten/emscripten.h>
 #include "engine.h"
+#include "nnue.h"
 #include <cstdio>
 
 // 全局棋盘实例
@@ -192,6 +193,38 @@ long long wasmGetLastSearchScore() {
 EMSCRIPTEN_KEEPALIVE
 long long evaluateBoard() {
     return (long long)evaluatePosition(g_board);
+}
+
+// ---- NNUE spike（默认关闭；页面/测试脚本可显式开启） ----
+// 是否编入了 NNUE（含内嵌权重）
+EMSCRIPTEN_KEEPALIVE
+int wasmNnueAvailable() {
+#ifdef GOMOKU_WITH_NNUE
+    return Nnue::nnueLoaded() || true;   // 编译期即含内嵌权重
+#else
+    return 0;
+#endif
+}
+
+// 加载内嵌权重并开启/关闭网络评估（默认关；开启后 evaluatePosition 走网络）
+EMSCRIPTEN_KEEPALIVE
+int wasmNnueEnableEmbedded() {
+#ifdef GOMOKU_WITH_NNUE
+    if (!Nnue::nnueLoaded() && !Nnue::nnueLoadEmbedded()) return 0;
+    Nnue::nnueSetEnabled(true);
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+EMSCRIPTEN_KEEPALIVE
+void wasmNnueSetEnabled(int on) {
+#ifdef GOMOKU_WITH_NNUE
+    Nnue::nnueSetEnabled(on != 0);
+#else
+    (void)on;
+#endif
 }
 
 // 获取候选点数量（调试用）

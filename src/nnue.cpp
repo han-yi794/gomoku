@@ -10,7 +10,12 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <cstdint>
 #include <vector>
+
+#ifdef GOMOKU_WITH_NNUE
+#include "nnue_weights.h"   // 内嵌权重（export_weights_header.py 生成）
+#endif
 
 namespace Nnue {
 
@@ -164,27 +169,28 @@ bool readAll(std::FILE* f, void* buf, size_t bytes) {
 
 }  // namespace
 
-bool nnueLoad(const char* path) {
-    std::FILE* f = std::fopen(path, "rb");
-    if (!f) {
-        std::fprintf(stderr, "[nnue] cannot open %s\n", path);
-        return false;
-    }
+// 从内存解析权重包（与文件加载共用全部逻辑；wasm 无文件系统，走内嵌数组）
+static bool nnueParse(const uint8_t* data, size_t len) {
+    size_t off = 0;
+    auto read = [&](void* buf, size_t n) -> bool {
+        if (off + n > len) return false;
+        std::memcpy(buf, data + off, n);
+        off += n;
+        return true;
+    };
+
     uint32_t magic, version, dIn, dH1, dH2, dOut, r0, r1, r2;
-    bool ok = readAll(f, &magic, 4) && readAll(f, &version, 4) &&
-              readAll(f, &dIn, 4) && readAll(f, &dH1, 4) && readAll(f, &dH2, 4) &&
-              readAll(f, &dOut, 4) && readAll(f, &r0, 4) && readAll(f, &r1, 4) &&
-              readAll(f, &r2, 4);
+    bool ok = read(&magic, 4) && read(&version, 4) &&
+              read(&dIn, 4) && read(&dH1, 4) && read(&dH2, 4) &&
+              read(&dOut, 4) && read(&r0, 4) && read(&r1, 4) && read(&r2, 4);
     if (!ok || magic != 0x4E4E5545u || version != 1 || dIn != (uint32_t)FEATURE_DIM || dOut != 1) {
-        std::fclose(f);
         std::fprintf(stderr, "[nnue] bad header (magic=%08x ver=%u in=%u out=%u)\n", magic, version, dIn, dOut);
         return false;
     }
 
     g_mean.resize(dIn);
     g_std.resize(dIn);
-    if (!readAll(f, g_mean.data(), dIn * 4) || !readAll(f, g_std.data(), dIn * 4)) {
-        std::fclose(f);
+    if (!read(g_mean.data(), dIn * 4) || !read(g_std.data(), dIn * 4)) {
         std::fprintf(stderr, "[nnue] truncated stats\n");
         return false;
     }
@@ -196,20 +202,46 @@ bool nnueLoad(const char* path) {
         L.in = dims[li];
         L.out = dims[li + 1];
         float scale;
-        if (!readAll(f, &scale, 4)) { std::fclose(f); return false; }
+        if (!read(&scale, 4)) return false;
         std::vector<int8_t> q((size_t)L.in * L.out);
-        if (!readAll(f, q.data(), q.size())) { std::fclose(f); return false; }
+        if (!read(q.data(), q.size())) return false;
         L.w.resize((size_t)L.in * L.out);
         for (size_t i = 0; i < q.size(); i++) L.w[i] = (float)q[i] * scale;
         L.b.resize(L.out);
-        if (!readAll(f, L.b.data(), L.out * 4)) { std::fclose(f); return false; }
+        if (!read(L.b.data(), L.out * 4)) return false;
         g_layers.push_back(std::move(L));
     }
-    std::fclose(f);
     g_dimIn = (int)dIn;
     g_loaded = true;
-    std::fprintf(stderr, "[nnue] loaded %s: %d->%d->%d->%d\n", path, dims[0], dims[1], dims[2], dims[3]);
+    std::fprintf(stderr, "[nnue] loaded: %d->%d->%d->%d\n", dims[0], dims[1], dims[2], dims[3]);
     return true;
+}
+
+bool nnueLoad(const char* path) {
+    std::FILE* f = std::fopen(path, "rb");
+    if (!f) {
+        std::fprintf(stderr, "[nnue] cannot open %s\n", path);
+        return false;
+    }
+    std::fseek(f, 0, SEEK_END);
+    const long size = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (size <= 0) { std::fclose(f); return false; }
+    std::vector<uint8_t> buf((size_t)size);
+    const size_t got = std::fread(buf.data(), 1, buf.size(), f);
+    std::fclose(f);
+    if (got != buf.size()) return false;
+    return nnueParse(buf.data(), buf.size());
+}
+
+// 内嵌权重（src/nnue_weights.h，由 export_weights_header.py 生成）——wasm 路径专用入口
+bool nnueLoadEmbedded() {
+#ifdef GOMOKU_WITH_NNUE
+    return nnueParse(NNUE_WEIGHTS, NNUE_WEIGHTS_LEN);
+#else
+    std::fprintf(stderr, "[nnue] embedded weights not compiled in\n");
+    return false;
+#endif
 }
 
 bool nnueLoaded() { return g_loaded; }

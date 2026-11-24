@@ -20,7 +20,8 @@ New-Item -ItemType Directory -Path 'build' -Force | Out-Null
 Write-Host "Building Gomoku WASM..." -ForegroundColor Cyan
 
 # Compile
-em++ src/engine.cpp src/main.cpp -o build/gomoku.js -O2 -I src
+# NNUE spike：引擎与权重内嵌进 wasm 构建（默认关闭，flag 控制；见 src/nnue.h）
+em++ -DGOMOKU_WITH_NNUE src/engine.cpp src/nnue.cpp src/main.cpp -o build/gomoku.js -O2 -I src
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host "Build successful!" -ForegroundColor Green

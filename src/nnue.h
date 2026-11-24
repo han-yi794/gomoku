@@ -59,6 +59,9 @@ const char* zoneName(int zone);
 // 推理：加载即反量化为 float（网络极小 ~2.1k MAC，不在意这点开销；真正的 int8
 // 热路径是后续优化项）。默认关闭，flag 控制。
 bool nnueLoad(const char* path);
+// 从内嵌权重（src/nnue_weights.h）加载——wasm/浏览器路径（无文件系统）的入口；
+// 原生构建也可用（权重与 CLI --nnue 的文件同源同期）。
+bool nnueLoadEmbedded();
 bool nnueLoaded();
 void nnueSetEnabled(bool on);
 bool nnueEnabled();
