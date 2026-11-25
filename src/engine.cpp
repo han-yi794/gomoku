@@ -1167,6 +1167,7 @@ bool hasVcfWin(Board& board) {
     ctx().vcfNodeLimit = savedLimit;    return win;
 }
 
+
 // ============= 战术搜索置换表 =============
 //
 // 威胁搜索的递归里，同一局面会被不同的走法顺序反复展开（三的应手分支尤其
@@ -1480,6 +1481,42 @@ static inline int64_t vcfKillValue(int initialFours) {
 static inline int64_t vctKillValue() {
     const int attackerMoves = VCT_MAX_MOVES - ctx().vctWinMovesLeft + 1;
     return killValueFromMoves(attackerMoves);
+}
+
+// 对「我方走 (x,y) 之后」的局面做对手核杀，返回杀距 ply（0 = 证不出杀）。
+// 与 b3 收尾核杀同档射程（1.5M VCF / 600k VCT 节点）；契约 4/5：计数器先清零、
+// g_timedOut 与节点上限 save/restore。用棋盘副本，不动调用方局面。
+int probeOpponentKill(const Board& board, int x, int y, int64_t budgetMs) {
+    Board b = board;             // Board 可拷贝（定长数组）
+    const int me = b.getPlayer();
+    if (!b.makeMove(x, y)) return 0;
+    const int opp = (me == BLACK) ? WHITE : BLACK;
+
+    const bool savedTimedOut = ctx().timedOut;
+    const int savedVcfLimit = ctx().vcfNodeLimit;
+    const int savedVctLimit = ctx().vctNodeLimit;
+    ctx().vcfNodeLimit = 1500000;   // b3 同档：实测 250k 会漏深链杀
+    ctx().vctNodeLimit = 600000;
+
+    int plies = 0;
+    ctx().vcfNodes = 0;
+    ctx().vctNodes = 0;
+    if (vcfSearch(b, opp, me, VCF_DEFENSE_FOURS, budgetMs, nullptr, nullptr)) {
+        const int foursUsed = ctx().vcfWinFours - (VCF_MAX_FOURS - VCF_DEFENSE_FOURS);
+        plies = foursUsed > 0 ? 2 * foursUsed - 1 : 1;
+    } else {
+        ctx().vcfNodes = 0;
+        ctx().vctNodes = 0;
+        if (vctSearch(b, opp, me, VCT_MAX_MOVES, budgetMs, nullptr, nullptr)) {
+            const int attackerMoves = VCT_MAX_MOVES - ctx().vctWinMovesLeft + 1;
+            plies = attackerMoves > 0 ? 2 * attackerMoves - 1 : 1;
+        }
+    }
+
+    ctx().vcfNodeLimit = savedVcfLimit;
+    ctx().vctNodeLimit = savedVctLimit;
+    ctx().timedOut = savedTimedOut;
+    return plies;
 }
 
 // ============= 迭代加深搜索 =============

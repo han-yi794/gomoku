@@ -149,6 +149,27 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // probe：replay 后对指定候选做对手核杀（返回杀距 ply，0 = 证不出杀）
+    if (cmd == "probe") {
+        int probeBudget = 5000;
+        int px = -1, py = -1;
+        std::vector<std::pair<int, int>> mv;
+        for (int i = 2; i < argc; i++) {
+            const std::string a = argv[i];
+            int x, y;
+            if (std::sscanf(a.c_str(), "%d,%d", &x, &y) == 2 && a.find(",") != std::string::npos) mv.emplace_back(x, y);
+            else { std::fprintf(stderr, "bad argument: %s\n", a.c_str()); return 1; }
+        }
+        if (mv.size() < 1) { std::fprintf(stderr, "usage: probe x,y [moves...]\n"); return 1; }
+        px = mv[0].first; py = mv[0].second;
+        Board board;
+        board.reset();
+        for (size_t i = 1; i < mv.size(); i++) board.makeMove(mv[i].first, mv[i].second);
+        const int plies = probeOpponentKill(board, px, py, probeBudget);
+        std::printf("probe (%d,%d): killPlies=%d (budget=%dms)\n", px, py, plies, probeBudget);
+        return 0;
+    }
+
     // nnue-check：增量累加器差分测试（累加器 vs 全量提取，逐 push/pop 比对）
     if (cmd == "nnue-check") {
         int moves = 200;
@@ -208,6 +229,7 @@ int main(int argc, char** argv) {
         int dumpBudget = 20000;
         int dumpThreads = 1;
         int openMoves = 0;
+        bool sanitize = false;
         std::string outPath = "nnue_dump.txt";
         for (int i = 2; i < argc; i++) {
             const std::string a = argv[i];
@@ -217,6 +239,7 @@ int main(int argc, char** argv) {
             else if (a == "--threads" && i + 1 < argc) dumpThreads = std::atoi(argv[++i]);
             else if (a == "--out" && i + 1 < argc) outPath = argv[++i];
             else if (a == "--open" && i + 1 < argc) openMoves = std::atoi(argv[++i]);
+            else if (a == "--sanitize") sanitize = true;
             else if (a == "--nnue") { ++i; }        // 已被预扫描处理
             else if (a.rfind("--nnue=", 0) == 0) {}
             else if (a.rfind("--budget=", 0) == 0) dumpBudget = std::atoi(a.c_str() + 9);
@@ -275,7 +298,18 @@ int main(int argc, char** argv) {
                 const SearchResult r = findBestMoveParallel(board, dumpThreads);
                 if (r.bestX < 0) break;
                 // 标签行：当前局面的根评分（走子方视角）；终局分可能是 mate 分，训练端处理
-                std::fprintf(f, "%lld\t", (long long)r.bestScore);
+            // 标签消毒（--sanitize）：若教师挑出的着法被对手 VCF/VCT 证杀，
+            // 标签不得高于该杀距的 mate 分值（封顶）——消除「过自信送杀」的训练噪声。
+            int64_t label = r.bestScore;
+            if (sanitize && r.bestX >= 0) {
+                const int plies = probeOpponentKill(board, r.bestX, r.bestY, dumpBudget > 2000 ? 3000 : 1000);
+                if (plies > 0) {
+                    const int k = plies < 32 ? plies : 32;
+                    const int64_t killValue = -(WIN_THRESHOLD - 1 - (int64_t)k * 8);
+                    if (killValue < label) label = killValue;
+                }
+            }
+            std::fprintf(f, "%lld\t", (long long)label);
                 for (int i = 0; i < Nnue::FEATURE_DIM; i++) {
                     std::fprintf(f, "%s%d", i ? " " : "", feats[i]);
                 }

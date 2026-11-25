@@ -216,4 +216,9 @@ int64_t getLastSearchScore();
 // 当前局面轮走方是否存在连续冲四必胜（VCF），供自检/测试
 bool hasVcfWin(Board& board);
 
+// 对「我方走 (x,y) 之后」的局面做对手 VCF/VCT 核杀（b3 同档射程），
+// 返回杀距 ply；0 = 预算内证不出杀。供 NNUE 数据标签消毒等取证用途，
+// 纯查询 API，不改变搜索行为（内部用棋盘副本，不动调用方局面）。
+int probeOpponentKill(const Board& board, int x, int y, int64_t budgetMs);
+
 #endif // GOMOKU_ENGINE_H
