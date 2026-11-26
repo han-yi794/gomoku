@@ -8,6 +8,7 @@
 //                                                    — 播棋后搜索（坐标 0..14，(列,行)）
 //   gomoku_cli selfplay [--threads N] [--budget MS] — 机机对局到终局（打印棋谱）
 //   gomoku_cli nps [threads] [budget]               — 单步纯节点吞吐测量
+//   gomoku_cli eval x,y x,y ...                     — 静态评估对照（古典 vs NNUE 原始分）
 //   gomoku_cli dump [--games N] [--budget MS] [--threads T] [--out FILE]
 //                                                    — 自对弈采集 NNUE 蒸馏数据
 //                                                     （每行：score TAB 特征向量）
@@ -353,6 +354,29 @@ int main(int argc, char** argv) {
     }
     if (cmd == "bench" && argc > 2 && std::isdigit((unsigned char)argv[2][0])) {
         threads = std::atoi(argv[2]);
+    }
+
+    // eval：静态评估对照（古典 evaluatePosition vs NNUE 原始分，同行棋方视角）
+    // 评估轴测量工具：不经过搜索直接比较两套评估对同一局面的给分。
+    // 注意：evaluatePosition 是统一入口，NNUE 开启时会走累加器路径（读到未 reset 的
+    // 默认累加器 = 垃圾值），故古典读数必须先临时关网。
+    if (cmd == "eval") {
+        Board board;
+        board.reset();
+        for (const auto& m : moves) {
+            if (!board.makeMove(m.first, m.second)) {
+                std::fprintf(stderr, "illegal move (%d,%d)\n", m.first, m.second);
+                return 1;
+            }
+        }
+        const bool nnueWas = Nnue::nnueEnabled();
+        if (nnueWas) Nnue::nnueSetEnabled(false);
+        const int64_t ce = evaluatePosition(board);
+        if (nnueWas) Nnue::nnueSetEnabled(true);
+        std::printf("eval: classical=%lld", (long long)ce);
+        if (nnueWas) std::printf(" nnue=%lld", (long long)Nnue::nnueEvaluate(board));
+        std::printf(" side=%d moves=%d\n", board.getPlayer(), board.moveCount());
+        return 0;
     }
 
     if (cmd == "bench") {
