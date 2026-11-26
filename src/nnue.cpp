@@ -451,9 +451,16 @@ void Accumulator::reset(const Board& board) {
     int tmp[FEATURE_DIM];
     extractFeatures(board, tmp);
     std::memcpy(feats_, tmp, sizeof(feats_));
+    snapTop_ = 0;   // 新基准点：栈中残留快照一律作废
 }
 
 void Accumulator::push(const Board& b, int x, int y, int player) {
+    // 成对调用（makeMove→push / undo→pop）时保存落子前真值，pop 直接恢复
+    if (snapTop_ < SNAP_MAX) {
+        Snap& s = snaps_[snapTop_++];
+        std::memcpy(s.feats, feats_, sizeof(s.feats));
+        s.x = x; s.y = y; s.player = player; s.live = true;
+    }
     // 归因空间 = 行棋前（side0 = 落子方）；调用在 makeMove 之后，扫描绕点进行、
     // 两态（分裂/合并）均可由当前棋盘算出。delta 全部施加后整块互换得到行棋后真值。
     for (int d = 0; d < 4; d++) {
@@ -470,6 +477,17 @@ void Accumulator::push(const Board& b, int x, int y, int player) {
 }
 
 void Accumulator::pop(const Board& b, int x, int y, int player) {
+    // 快照恢复：与栈顶匹配时 O(FEATURE_DIM) memcpy 直返落子前真值
+    if (snapTop_ > 0) {
+        Snap& s = snaps_[snapTop_ - 1];
+        if (s.live && s.x == x && s.y == y && s.player == player) {
+            std::memcpy(feats_, s.feats, sizeof(feats_));
+            s.live = false;
+            snapTop_--;
+            return;
+        }
+    }
+    // 兜底（不平衡或快照缺失）：保留原重算路径
     // 归因空间 = 含子态（side0 = 落子方的对手）：合并段移除、分裂段恢复；
     // delta 施加后整块互换得到无子态（行棋方 = 落子方）的真值。
     const int opp = (player == BLACK) ? WHITE : BLACK;

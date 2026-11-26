@@ -83,6 +83,17 @@ public:
     const int* features() const { return feats_; }
 
 private:
+    // ---- 快照栈：push/pop 在 negamax 中严格成对，pop 用 O(FEATURE_DIM) 的 memcpy
+    // 恢复真值，免掉整套 delta 重算（实测 pop 约占累加器开销一半）。
+    // 兜底：栈空或顶层不匹配（理论不达）时落回原重算路径，保证语义不变。
+    static constexpr int SNAP_MAX = 264;   // > 棋盘最大着数（225）
+    struct Snap {
+        int feats[FEATURE_DIM];
+        int x, y, player;
+        bool live;
+    };
+    Snap snaps_[SNAP_MAX];
+    int snapTop_ = 0;
     int feats_[FEATURE_DIM] = {0};
 
     // 归因空间 = attrSide0 所指颜色的「行棋方」；段/威胁 delta 在该空间内施加，
