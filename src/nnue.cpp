@@ -382,24 +382,22 @@ void Accumulator::threatDelta(const Board& b, int x, int y, int mover, int attrS
             for (int side = 0; side < 2; side++) {
                 const int player = side == 0 ? attrSide0 : (attrSide0 == BLACK ? WHITE : BLACK);
                 int* base = feats_ + side * (PATTERN_NB * ZONE_NB);
-                // 双态都用虚拟落子表达：旧态 = (x,y) 视作空格（push 时真棋盘已含落子，
-                // 不能直接读盘！），新态 = (x,y) 视作 mover 的子。
-                auto bestOf = [&](int virtCell) {
-                    int best = 0;
-                    for (int dd = 0; dd < 4; dd++) {
-                        const int t = threatOnVirt(b, px, py, player, dd, x, y, virtCell);
-                        if (t > best) best = t;
-                    }
-                    return best;
-                };
-                const int from = bestOf(fromVirtual ? mover : EMPTY);
-                const int to = bestOf(toVirtual ? mover : EMPTY);
-#ifdef GOMOKU_NNUE_DEBUG_COMPARE
-                if (from != to) {
-                    std::fprintf(stderr, "[threat-delta] p=(%d,%d) side=%d player=%d zone=%d from=%d to=%d\n",
-                                 px, py, side, player, zone, from, to);
+                // 精确优化：两条不同斜率的线只交于 p 自身，故除「穿过 (x,y) 的方向 d」
+                // 外其余三方向的威胁与 (x,y) 落子与否无关——普通扫描算一次即可，只有
+                // through 方向需要虚拟双态。原实现每点 8 次虚拟扫描，现为 3 普通 + 2 虚拟；
+                // 且 already-最强（otherBest==2）的点直接跳过。
+                int otherBest = 0;
+                for (int dd = 0; dd < 4; dd++) {
+                    if (dd == d) continue;
+                    const int t = fourThreatOn(b, px, py, player, dd);
+                    if (t > otherBest) otherBest = t;
                 }
-#endif
+                if (otherBest == 2) continue;
+                const int fromT = threatOnVirt(b, px, py, player, d, x, y, fromVirtual ? mover : EMPTY);
+                const int toT = threatOnVirt(b, px, py, player, d, x, y, toVirtual ? mover : EMPTY);
+                const int from = fromT > otherBest ? fromT : otherBest;
+                const int to = toT > otherBest ? toT : otherBest;
+                if (from == to) continue;
                 if (from == 2) base[O4THREAT * ZONE_NB + zone] -= sign;
                 else if (from == 1) base[C4THREAT * ZONE_NB + zone] -= sign;
                 if (to == 2) base[O4THREAT * ZONE_NB + zone] += sign;
