@@ -21,9 +21,17 @@ function loadOr(parts, name) {
 
 const shallow = dataLines(nn + 'dump_v2.txt');
 const mid = dataLines(nn + 'dump_v4.txt');
-const deep3s = loadOr([nn + 'dump_v6.txt', 'D:/gomoku/_dbg/v6_more.txt'], '3s-sanitized');
-const deep10s = loadOr([nn + 'dump_v6deep.txt', 'D:/gomoku/_dbg/v6deep_more.txt'], '10s-deep');
-const deep30s = loadOr([nn + 'dump_v7.txt', nn + 'dump_v7b.txt', nn + 'dump_v7c.txt', nn + 'dump_v7d.txt'], '30s-deep');
+// 本机无 v6_more/v6deep_more 增补集（原机产物、从未入库）——基础档文件缺失时跳过；
+// 基础档按 _dbg/regen_base_tiers.ps1 降量重采（结构不变）。
+function loadSome(parts, name) {
+  const out = [];
+  for (const p of parts) if (fs.existsSync(p)) out.push(...dataLines(p));
+  if (out.length < 50) throw new Error(name + ' too small: ' + out.length);
+  return out;
+}
+const deep3s = loadSome([nn + 'dump_v6.txt', 'D:/gomoku/_dbg/v6_more.txt'], '3s-sanitized');
+const deep10s = loadSome([nn + 'dump_v6deep.txt', 'D:/gomoku/_dbg/v6deep_more.txt'], '10s-deep');
+const deep30s = loadSome([nn + 'dump_v7.txt', nn + 'dump_v7b.txt', nn + 'dump_v7c.txt', nn + 'dump_v7d.txt', nn + 'dump_v7e.txt', nn + 'dump_v7f.txt'], '30s-deep');
 
 const out = [...shallow, ...mid, ...deep3s, ...deep3s, ...deep3s, ...deep10s, ...deep10s, ...deep10s, ...deep30s, ...deep30s, ...deep30s];
 fs.writeFileSync('D:/gomoku/_dbg/mix_v7.txt', out.join('\n') + '\n');

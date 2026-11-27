@@ -34,6 +34,8 @@ node _dbg/fixtures_replay.js 20000                            # 古典夹具，�
 - `native/nnue/nnue_v7p.bin`：v7 探针权重（1283 行 30s 标签训练，val_mse 0.139）。
 - `_dbg/mix_v7.js`：混合集生成器（读全部 dump_v7*，输出 `_dbg/mix_v7.txt`；mix_v7.txt 不入库，新机器上重跑一次生成）。`_dbg/native_fixtures_replay.js`、`_dbg/verify_drift.js`：原生夹具复现 + 协议核验（均支持 `--nnue` 任意权重路径）。
 - `_dbg/fixtures_replay.js`：古典（wasm，NNUE 关）夹具复现——§1 引用的那个，此前漏提交（新机上手会 file not found），2026-11-27 补入库。`node _dbg/fixtures_replay.js 20000`：电池 n1/n13/n15/n17 + 第 11 局 m8/m10/m12 + 第 13 局 m12；本机实测 6/8 命中、m8 `(5,9)` 为 §7 已知平局差异（文档口径 8/9）。
+- `_dbg/mix_v7.js`：2026-11-28 改为拼入 v7e/v7f，基础档缺失时跳过（配合降量重采）。
+- **线上体验 NNUE（2026-11-28）**：Pages 已切到本分支；wasm 单文件已带 NNUE（`package.ps1` 修好 flag，默认关、古典路径实测逐位不变）。体验法：控制台 `Module._wasmNnueEnableEmbedded()` 返回 `1` 后点"新游戏"；关闭 `Module._wasmNnueSetEnabled(0)` 或刷新。当前内嵌权重 = v6。
 
 ## 4. 后台任务（换机后按需重启）
 
@@ -87,7 +89,23 @@ native\gomoku_cli.exe match --games 10 --budget 20000 --nnue _dbg/nnue_v7.bin
    - `native\build_native.ps1` 已能自动找到 `D:\msys2\msys64\ucrt64\bin\g++.exe`；emsdk 仍走 zip 解压 `D:\emsdk`。
    - 两个坑：(a) g++ 的子进程 `cc1plus` 在 `lib/gcc/…` 下，依赖 DLL 靠 PATH 找——构建脚本已自动把该 bin 前置 PATH（手动编译时同样要加）；(b) `native\gomoku_cli.exe` 全静态链接、**不依赖 PATH**，可直接后台跑。
 
-## 7. 已知漂移点现状（v7 探针，20s 原生）
+## 9. 过夜自主计划（2026-11-28 深夜 → 次日；用户睡觉中，质量优先）
+
+**数据缺口（已确认）**：mix 的基础档 `native/nnue/dump_v2/4/6/v6deep.txt` 从未入库（gitignored，只 force-add 过 v7 探针产物），原机不可达，`mix_v7.js` 原样跑不了。适配：按 AGENTS.md 决策记录里各档的采集命令**降量重采**（`_dbg/regen_base_tiers.ps1`：v2 40 局 300ms、v4 12 局 800ms、v6 25 局 3s 消毒、v6deep 10 局 10s 消毒）——**结构不变**（浅/中/深三档齐全、深档 ×3 加权、消毒与随机开局标志与原采集一致），仅总量约为原设计的 1/2；判证质量由门禁保证，不由数据量保证。
+
+**执行序**：① v7d/e/f 采集 + 探针 20s A/B 跑完（后台）→ ② `regen_base_tiers.ps1` 四路并行 → ③ `node _dbg/mix_v7.js` → `python native/nnue/train.py --iters 6000` → ④ `nnue-check`（mismatches 必须 0）→ nps 对比 → ⑤ 原生夹具（**m12 必须选 `(6,5)`**）→ ⑥ `verify_drift.js` 三处漂移点**对手侧古典真值**核验 → ⑦ 2s / 5s 三档 A/B（每档 10 局换先）。
+
+**质量红线（用户指示：质量优先，逐条遵守）**：
+1. 门禁一道不减：差分 0 失配、m12 夹具、漂移点逐项对手侧核验，缺一即判不过；
+2. **边缘结果一律判不过**（打平/轻劣都算不过，不做"差不多"解释；每处漂移必须有黑方古典 20s 深搜分数对比）；
+3. A/B 样本不缩水：每档 10 局换先；若 12h 窗口装不下 20s 档，就留到早上并如实记"20s 门未测"，**不拿 2-3 局充当门禁**；
+4. 默认启用（`wasmNnueEnableEmbedded` 自动开）**绝不擅自决定**——协议第 6 步明属用户决策点；全过也只交方案；
+5. 不回滚、不切回 Pages（用户正在体验本分支）、不干扰在跑的计时机作业。
+
+**存档纪律（用户指示：及时存档）**：
+- 每完成一段立即 `commit + push`；采集数据按现状 force-add 增量归档（本机服务曾重启中断过采集），跑满再补推完整版；
+- `_dbg` 工具脚本随批次 force-add 进分支（既有惯例），本文档 §7 漂移表随手更新；
+- 训练出的权重先落 `_dbg/nnue_v7.bin`，判定有结论再进 `native/nnue/` 并提交。
 
 | 夹具 | v7 探针选点 | 期望 | 真值（黑方 20s 古典深搜，低分=白方更好） | 结论 |
 |---|---|---|---|---|
