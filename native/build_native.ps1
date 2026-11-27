@@ -7,10 +7,12 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 
-$candidates = @($env:GXX,
+$candidates = @(@($env:GXX,
                 'D:\mingw\mingw64\bin\g++.exe',
+                'D:\msys2\msys64\ucrt64\bin\g++.exe',
+                'D:\msys2\msys64\mingw64\bin\g++.exe',
                 'D:\msys2\ucrt64\bin\g++.exe',
-                'D:\msys2\mingw64\bin\g++.exe') | Where-Object { $_ -and (Test-Path $_) }
+                'D:\msys2\mingw64\bin\g++.exe') | Where-Object { $_ -and (Test-Path $_) })
 if (-not $candidates) {
     throw "g++ not found. Set `$env:GXX, or install a portable MinGW (winlibs / MSYS2). See HANDOFF_V7.md section 6.7."
 }

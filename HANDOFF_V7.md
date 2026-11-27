@@ -80,7 +80,12 @@ native\gomoku_cli.exe match --games 10 --budget 20000 --nnue _dbg/nnue_v7.bin
 4. **原生 eval 命令**：`gomoku_cli.exe eval --nnue <bin> x,y ...`（静态对照；evaluatePosition 是统一入口，NNUE 开启时读未 reset 的默认累加器出垃圾值——CLI 已处理，勿再「修」）。
 5. **别边采集边跑计时敏感的夹具复现**：CPU 争抢会改选点。
 6. AGENTS.md「引擎行为契约」「回归夹具」两节是硬规矩——改引擎/换评估必跑。
-7. **新机工具链装法（2026-11-27 补）**：MinGW 用 [winlibs](https://github.com/brechtsanders/winlibs_mingw/releases) 便携包——选 `winlibs-x86_64-posix-seh-gcc-*-mingw-w64ucrt-*.zip`（**别选 llvm 版**，大 150MB）。本机网络对吊销检查报 `CRYPT_E_NO_REVOCATION_CHECK`，curl 下载时加 `--ssl-no-revoke`。解压用 Windows 自带 tar：`tar -xf <zip> -C D:\mingw`（得到 `D:\mingw\mingw64\bin\g++.exe`，`native\build_native.ps1` 认这个路径）。emsdk 同理 zip 解压到 `D:\emsdk`，`emsdk_env.ps1` 拷进 `D:\emsdk\`。
+7. **新机工具链装法（2026-11-28 本机实测）**：**别再试 winlibs**——这台机器的网络把 GitHub release 资产 CDN 拉黑了（100 秒 0 字节，浏览器和 `gh release download` 同样卡死）。已验证可行路线是 MSYS2：
+   - 下载 `msys2-base-x86_64-*.tar.xz`（repo.msys2.org/distrib/x86_64/，列表面页可看）：`curl.exe --ssl-no-revoke -C - --max-time 240 -sS -o D:\msys2-base.tar.xz <url>`——本网络每 ~35MB 断一次，`-C -` 续传循环约 15~20 次拿全（`.zst` 版同理，但见下一步）；
+   - **Windows 自带 tar 解不了 zst/xz**（外挂 `zstd`/`xz` 程序不存在）——用 Python（本机有 3.12）：`python -c "import tarfile; tarfile.open(r'D:\msys2-base.tar.xz','r:xz').extractall(r'D:\msys2')"`；
+   - 解压得到 `D:\msys2\msys64\`（msys2 的根，**别拍平**）；首跑 `& D:\msys2\msys64\usr\bin\bash.exe -lc "pacman -Sy --noconfirm mingw-w64-ucrt-x86_64-gcc"`（首跑自动初始化 keyring；包都小，断了重跑就行）；
+   - `native\build_native.ps1` 已能自动找到 `D:\msys2\msys64\ucrt64\bin\g++.exe`；emsdk 仍走 zip 解压 `D:\emsdk`。
+   - 两个坑：(a) g++ 的子进程 `cc1plus` 在 `lib/gcc/…` 下，依赖 DLL 靠 PATH 找——构建脚本已自动把该 bin 前置 PATH（手动编译时同样要加）；(b) `native\gomoku_cli.exe` 全静态链接、**不依赖 PATH**，可直接后台跑。
 
 ## 7. 已知漂移点现状（v7 探针，20s 原生）
 
