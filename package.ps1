@@ -35,7 +35,9 @@ New-Item -ItemType Directory -Path $dist -Force | Out-Null
 # local web server is required (works from file://).
 Push-Location $root
 try {
-    em++ src/engine.cpp src/main.cpp -o dist/gomoku.js -O2 -I src -sSINGLE_FILE=1
+    # NNUE 与 build.ps1 对齐：引擎与内嵌权重编译进单文件（默认关闭，flag/API 控制，
+# 古典路径有运行期开关保护——新旧构建同设置对比着法逐位一致）。见 src/nnue.h。
+em++ -DGOMOKU_WITH_NNUE src/engine.cpp src/nnue.cpp src/main.cpp -o dist/gomoku.js -O2 -I src -sSINGLE_FILE=1
     if ($LASTEXITCODE -ne 0) { throw 'em++ failed' }
 } finally {
     Pop-Location
