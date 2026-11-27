@@ -12,7 +12,9 @@ NNUE v7（30s 教师深标签）**探针已验证立论成功**：2s 档零败�
 git clone <repo-url> D:\gomoku; cd D:\gomoku
 git checkout handoff/nnue-v7          # 本分支：含 v7 采集数据与探针产物（见 §3）
 git config user.name han-yi794; git config user.email han-yi794@users.noreply.github.com
-# 工具链（若已在本机装好则跳过）：D:\emsdk（7.0.0，解压 zip 版）、D:\mingw
+# 工具链（若已在本机装好则跳过；新机装法见 §6.7）：
+#   - Emscripten：emsdk zip 解压到 D:\emsdk，emsdk_env.ps1 拷进 D:\emsdk\
+#   - MinGW：winlibs 便携 zip，解压到 D:\mingw（见 §6.7 完整配方）
 pwsh -ExecutionPolicy Bypass -File native\build_native.ps1   # 原生 CLI（先于一切测量）
 pwsh -ExecutionPolicy Bypass -File build.ps1                 # wasm（node 测试用）
 node test_engine.js; node test_session_state.js; node test_loss_claims.js   # 各 <1min，须 exit 0
@@ -31,6 +33,7 @@ node _dbg/fixtures_replay.js 20000                            # 古典夹具，�
 - `native/nnue/dump_v7.txt / dump_v7b.txt / dump_v7c.txt`：30s 消毒标签共 1286 行（服务重启中断幸存；后续局在 v7d/e/f 继续采，完成后再推）。
 - `native/nnue/nnue_v7p.bin`：v7 探针权重（1283 行 30s 标签训练，val_mse 0.139）。
 - `_dbg/mix_v7.js`：混合集生成器（读全部 dump_v7*，输出 `_dbg/mix_v7.txt`；mix_v7.txt 不入库，新机器上重跑一次生成）。`_dbg/native_fixtures_replay.js`、`_dbg/verify_drift.js`：原生夹具复现 + 协议核验（均支持 `--nnue` 任意权重路径）。
+- `_dbg/fixtures_replay.js`：古典（wasm，NNUE 关）夹具复现——§1 引用的那个，此前漏提交（新机上手会 file not found），2026-11-27 补入库。`node _dbg/fixtures_replay.js 20000`：电池 n1/n13/n15/n17 + 第 11 局 m8/m10/m12 + 第 13 局 m12；本机实测 6/8 命中、m8 `(5,9)` 为 §7 已知平局差异（文档口径 8/9）。
 
 ## 4. 后台任务（换机后按需重启）
 
@@ -77,6 +80,7 @@ native\gomoku_cli.exe match --games 10 --budget 20000 --nnue _dbg/nnue_v7.bin
 4. **原生 eval 命令**：`gomoku_cli.exe eval --nnue <bin> x,y ...`（静态对照；evaluatePosition 是统一入口，NNUE 开启时读未 reset 的默认累加器出垃圾值——CLI 已处理，勿再「修」）。
 5. **别边采集边跑计时敏感的夹具复现**：CPU 争抢会改选点。
 6. AGENTS.md「引擎行为契约」「回归夹具」两节是硬规矩——改引擎/换评估必跑。
+7. **新机工具链装法（2026-11-27 补）**：MinGW 用 [winlibs](https://github.com/brechtsanders/winlibs_mingw/releases) 便携包——选 `winlibs-x86_64-posix-seh-gcc-*-mingw-w64ucrt-*.zip`（**别选 llvm 版**，大 150MB）。本机网络对吊销检查报 `CRYPT_E_NO_REVOCATION_CHECK`，curl 下载时加 `--ssl-no-revoke`。解压用 Windows 自带 tar：`tar -xf <zip> -C D:\mingw`（得到 `D:\mingw\mingw64\bin\g++.exe`，`native\build_native.ps1` 认这个路径）。emsdk 同理 zip 解压到 `D:\emsdk`，`emsdk_env.ps1` 拷进 `D:\emsdk\`。
 
 ## 7. 已知漂移点现状（v7 探针，20s 原生）
 
