@@ -163,3 +163,11 @@ native\gomoku_cli.exe match --games 10 --budget 20000 --nnue _dbg/nnue_v7.bin
 **成本口径（发布承诺）**：仅「乐观+对手有威胁+预算≥8s」的局面触发；平凡局面零成本；实测触发器 +5~9s，最坏叠加 ~+15s（困难 20s 档单步至多 ~48s，UI「关键局面更久」已声明）。NNUE 关时古典路径 `nnue-check` 0 失配；`bench` 9/9（含全部败带夹具）。
 
 **当前状态（2026-11-28 验证完毕，存档 `8a0e9b0`）**：双构建通过；`nnue-check` 0 失配；`bench`×3 全 9/9；4 套 node 测试全 exit 0；端到端拒选 7/7。插桩已移除、`engine.cpp` 与提交版逐位一致。发布：构建号升 `20261128a` → `package.ps1` → `docs/` 同步 → push → curl 核对线上。
+
+## 11. 发布记录（2026-11-28）
+
+- **Release v1.1.0**：https://github.com/han-yi794/gomoku/releases/tag/v1.1.0
+  资产 `gomoku_portable_1.1.0.zip`（219,848 字节，SHA256 `8c1044c4…a95a69`；含 README + 字体 + .nojekyll）。
+- **坑**：`gh release create` 默认把标签打在 **default 分支（main=7657b8b）**上，与产物源码不符；已删除 release+tag 后带 `--target 910ac94` 重建——发布标签必须指向产出该构建的那个提交。
+- **线上 Pages**（本分支 docs）：https://han-yi794.github.io/gomoku/ 构建 `20261128a`，gomoku.js 94693 字节，与 dist 产物 SHA256 逐位一致。
+- **待办**：用户体验完后把 Pages 切回 `main:/docs`（红线：切回前必须经用户确认）。
