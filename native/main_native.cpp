@@ -262,6 +262,7 @@ int main(int argc, char** argv) {
 
         int feats[Nnue::FEATURE_DIM];
         long long lines = 0;
+        long long sanitizedL1 = 0, sanitizedL2 = 0;   // 标签消毒计数（L1 探针 / L2 深验）
         for (int g = 0; g < games; g++) {
             Board board;
             board.reset();
@@ -299,8 +300,13 @@ int main(int argc, char** argv) {
                 const SearchResult r = findBestMoveParallel(board, dumpThreads);
                 if (r.bestX < 0) break;
                 // 标签行：当前局面的根评分（走子方视角）；终局分可能是 mate 分，训练端处理
-            // 标签消毒（--sanitize）：若教师挑出的着法被对手 VCF/VCT 证杀，
-            // 标签不得高于该杀距的 mate 分值（封顶）——消除「过自信送杀」的训练噪声。
+            // 标签消毒（--sanitize）：
+            //   L1（原有）教师挑出的着法被对手 VCF/VCT 探针证杀（b3 同档射程）→ 标签
+            //     封顶到该杀距的 mate 分值——消除「过自信送杀」的训练噪声。
+            //   L2（2026-11-28 B 档）：L1 盖不住的深杀（m12 (7,5) 类——需对手 13.5s
+            //     全引擎深搜才证）。对「标签偏乐观 + 对手盘面有威胁结构」的局面做一次
+            //     对手侧全引擎深搜复核：证杀则封顶。教师自己看不见的杀会把过自信标签
+            //     蒸馏进网络（m12 就是这么坏的），这是标签治理。
             int64_t label = r.bestScore;
             if (sanitize && r.bestX >= 0) {
                 const int plies = probeOpponentKill(board, r.bestX, r.bestY, dumpBudget > 2000 ? 3000 : 1000);
@@ -308,6 +314,34 @@ int main(int argc, char** argv) {
                     const int k = plies < 32 ? plies : 32;
                     const int64_t killValue = -(WIN_THRESHOLD - 1 - (int64_t)k * 8);
                     if (killValue < label) label = killValue;
+                    sanitizedL1++;
+                } else if (label > -3000000) {
+                    // 闸门：标签已经够负（教师看得见危险）就不花深验预算；对手盘面必须
+                    // 有实质威胁结构（活四/冲四/活三/下一手可成的四威胁）才值得复核。
+                    const int* oppFeat = feats + Nnue::PATTERN_NB * Nnue::ZONE_NB;
+                    int threat = 0;
+                    for (int z = 0; z < Nnue::ZONE_NB; z++) {
+                        threat += oppFeat[Nnue::OPEN4 * Nnue::ZONE_NB + z]
+                                + oppFeat[Nnue::CLOSED4 * Nnue::ZONE_NB + z]
+                                + oppFeat[Nnue::OPEN3 * Nnue::ZONE_NB + z]
+                                + oppFeat[Nnue::O4THREAT * Nnue::ZONE_NB + z]
+                                + oppFeat[Nnue::C4THREAT * Nnue::ZONE_NB + z];
+                    }
+                    if (threat > 0) {
+                        board.makeMove(r.bestX, r.bestY);
+                        const int64_t savedBudget = getTimeBudgetMs();
+                        int verifyBudget = dumpBudget * 3 / 2;
+                        if (verifyBudget > 20000) verifyBudget = 20000;
+                        setTimeBudget(verifyBudget);
+                        const SearchResult r2 = findBestMoveParallel(board, 1);
+                        setTimeBudget(savedBudget);
+                        board.undo();
+                        // 证杀判别：mate 分恒 > WIN_THRESHOLD-1000（古典评估被 clamp 在下方）
+                        if (r2.bestX >= 0 && r2.bestScore > WIN_THRESHOLD - 1000) {
+                            const int64_t cap = -r2.bestScore;   // 走子方视角的负 mate 值
+                            if (cap < label) { label = cap; sanitizedL2++; }
+                        }
+                    }
                 }
             }
             std::fprintf(f, "%lld\t", (long long)label);
@@ -323,7 +357,8 @@ int main(int argc, char** argv) {
                          g + 1, games, board.moveCount(), lines);
         }
         std::fclose(f);
-        std::printf("dump done: %s (%lld lines, dim=%d)\n", outPath.c_str(), lines, Nnue::FEATURE_DIM);
+        std::printf("dump done: %s (%lld lines, dim=%d, sanitized L1=%lld L2=%lld)\n",
+                    outPath.c_str(), lines, Nnue::FEATURE_DIM, sanitizedL1, sanitizedL2);
         return 0;
     }
 
