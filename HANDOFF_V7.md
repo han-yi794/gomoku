@@ -82,6 +82,7 @@ native\gomoku_cli.exe match --games 10 --budget 20000 --nnue _dbg/nnue_v7.bin
 4. **原生 eval 命令**：`gomoku_cli.exe eval --nnue <bin> x,y ...`（静态对照；evaluatePosition 是统一入口，NNUE 开启时读未 reset 的默认累加器出垃圾值——CLI 已处理，勿再「修」）。
 5. **别边采集边跑计时敏感的夹具复现**：CPU 争抢会改选点。
 6. AGENTS.md「引擎行为契约」「回归夹具」两节是硬规矩——改引擎/换评估必跑。
+7. **计时敏感测量的负载敏感性（2026-11-28 新发现，血泪）**：同一搜索（m12 后白 `(6,5)`、黑古典 20s）在两路采集并行时得 +253 万、单路时得 -148 万——±400 万摆动。后果：① **对手侧漂移核验（黑方分对比）必须在安静机器上跑**（采集全完之后），今天忙时跑出的非 mate 分数一律作废重测；② mate 证杀类结论鲁棒（`(7,5)` → +9999751 两次一致），可作数；③ 安静环境下每个漂移点复跑两次取稳定值再判定。
 7. **新机工具链装法（2026-11-28 本机实测）**：**别再试 winlibs**——这台机器的网络把 GitHub release 资产 CDN 拉黑了（100 秒 0 字节，浏览器和 `gh release download` 同样卡死）。已验证可行路线是 MSYS2：
    - 下载 `msys2-base-x86_64-*.tar.xz`（repo.msys2.org/distrib/x86_64/，列表面页可看）：`curl.exe --ssl-no-revoke -C - --max-time 240 -sS -o D:\msys2-base.tar.xz <url>`——本网络每 ~35MB 断一次，`-C -` 续传循环约 15~20 次拿全（`.zst` 版同理，但见下一步）；
    - **Windows 自带 tar 解不了 zst/xz**（外挂 `zstd`/`xz` 程序不存在）——用 Python（本机有 3.12）：`python -c "import tarfile; tarfile.open(r'D:\msys2-base.tar.xz','r:xz').extractall(r'D:\msys2')"`；
