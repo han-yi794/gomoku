@@ -2069,6 +2069,85 @@ SearchResult findBestMove(Board& board) {
         ctx().vctNodeLimit = savedVctLimitP;
         ctx().timedOut = savedTimedOutP;
     }
+
+    // ===== 落子深证（b4，2026-11-28 用户选定） =====
+    // b3 探针层（VCF6/VCT8 + 放宽节点）只覆盖浅杀，远距将杀整类漏过——实测 m12 类
+    // 杀着需对手 13.5s 全引擎深搜才证（第 11/12/13 局的主败类）。收尾再对选中着做
+    // 一次对手侧全引擎深搜，证出 mate 即升级为拒选，走 b3 的幸存者路径。
+    // 闸门哲学与标注治理 L2（main_native.cpp）一致：自评乐观（>-300 万 = 引擎还没
+    // 看见危险）+ 对手盘面有实质威胁结构（潜在威胁分达冲四级）；深搜 3/4 预算封顶
+    // 20s（困难 20s → 单步至多 ~35s，UI「关键局面更久」已声明）。低预算档跳过。
+    if (!ctx().inPostScan && result.bestX >= 0 && rootCandidates.size() >= 2 &&
+        g_timeBudgetMs >= 8000 &&
+        bestRawScore > -3000000 && bestRawScore < WIN_SCORE_FLOOR &&
+        potentialThreatScore(board, rootOpponent) >= CLOSED_FOUR) {
+        int deepPickIdx = -1;
+        for (size_t i = 0; i < rootCandidates.size(); i++) {
+            if (rootCandidates[i].pos.x == result.bestX && rootCandidates[i].pos.y == result.bestY) { deepPickIdx = (int)i; break; }
+        }
+        bool deepKilled = false;
+        if (deepPickIdx >= 0 && getElapsedMs() < g_timeBudgetMs * 2) {
+            const auto savedStart = ctx().searchStartTime;
+            const int64_t savedBudget = g_timeBudgetMs;
+            const int64_t savedNodes = ctx().nodesVisited;
+            const bool savedTimedOut = ctx().timedOut;
+            ctx().inPostScan = true;   // 防递归互套（与决赛候选复核同法）
+            int64_t verifyBudget = g_timeBudgetMs * 3 / 4;
+            if (verifyBudget > 20000) verifyBudget = 20000;
+            g_timeBudgetMs = verifyBudget;
+            board.makeMove(result.bestX, result.bestY);          // 真落子：手番翻给对手
+            const SearchResult r2 = findBestMove(board);          // 对手侧全引擎深搜
+            board.undo();
+            ctx().inPostScan = false;
+            ctx().searchStartTime = savedStart;
+            g_timeBudgetMs = savedBudget;
+            ctx().nodesVisited = savedNodes;
+            ctx().timedOut = savedTimedOut;
+            // 证杀判别：mate 分恒 > WIN_THRESHOLD-1000（古典评估被 clamp 在下方）
+            if (r2.bestX >= 0 && r2.bestScore > WIN_THRESHOLD - 1000) deepKilled = true;
+        }
+        if (deepKilled) {
+            // 幸存者路径与 b3 同：最近一次完整迭代的原始分降序，取第一个探针查不到杀的
+            std::vector<std::pair<int64_t, int>> order;
+            order.reserve(rootCandidates.size());
+            for (size_t i = 0; i < rootCandidates.size(); i++) {
+                if ((int)i == deepPickIdx) continue;
+                order.emplace_back(rootCandidates[i].lastRawScore, (int)i);
+            }
+            std::stable_sort(order.begin(), order.end(),
+                [](const std::pair<int64_t, int>& a, const std::pair<int64_t, int>& b) { return a.first > b.first; });
+            const int savedVcfLimit2 = ctx().vcfNodeLimit;
+            const int savedVctLimit2 = ctx().vctNodeLimit;
+            // 幸存者窗口必须从「当前已耗时」起算：深证+主搜+b3 可能已花到 2 倍预算，
+            // 若沿用 b3 的「原始起点 +1.5 倍预算」窗口，循环开局即过期——实测 m10 到
+            // 此处已 35s，窗口 30s 早已过头，拒选会静默失败（白烧 15s 深证）。改从当前
+            // 起再给半个预算的探查窗口。
+            const int64_t survivorDeadline = getElapsedMs() + g_timeBudgetMs / 2;
+            ctx().vcfNodeLimit = 1500000;
+            ctx().vctNodeLimit = 600000;
+            int probed = 1;
+            for (const auto& ent : order) {
+                if (probed >= 8 || getElapsedMs() > survivorDeadline) break;
+                const Move& c = rootCandidates[ent.second];
+                ctx().vcfNodes = 0; ctx().vctNodes = 0;
+                board.set(c.pos.x, c.pos.y, rootPlayer);
+                bool oppWin = vcfSearch(board, rootOpponent, rootPlayer, VCF_DEFENSE_FOURS, survivorDeadline, nullptr, nullptr);
+                if (!oppWin) {
+                    oppWin = vctSearch(board, rootOpponent, rootPlayer, VCT_MAX_MOVES, survivorDeadline, nullptr, nullptr);
+                }
+                board.set(c.pos.x, c.pos.y, EMPTY);
+                probed++;
+                if (!oppWin) {
+                    result.bestX = c.pos.x;
+                    result.bestY = c.pos.y;
+                    if (c.lastRawScore > INT64_MIN) result.bestScore = c.lastRawScore;
+                    break;
+                }
+            }
+            ctx().vcfNodeLimit = savedVcfLimit2;
+            ctx().vctNodeLimit = savedVctLimit2;
+        }
+    }
     result.nodesVisited = ctx().nodesVisited;
     result.elapsedMs = getElapsedMs();
     result.timedOut = ctx().timedOut;
